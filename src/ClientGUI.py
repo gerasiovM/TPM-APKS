@@ -1,5 +1,3 @@
-from tkinter.ttk import Frame
-
 from ttkthemes import ThemedTk
 from tkinter import ttk
 
@@ -15,7 +13,7 @@ class ClientGUI:
 
     def build_ui(self):
         self.root.title("TPM-CPKS Client")
-        self.root.geometry("1200x700+100+200")
+        self.root.geometry("900x400+100+200")
         self.root.resizable(False, False)
 
         # Button frame
@@ -41,11 +39,18 @@ class ClientGUI:
 
         # Connection Frame
         self.connection_frame = ttk.Frame(self.frame_container)
+        self.connection_frame.config(padding=[20,20,20,20])
+        self.connection_frame.columnconfigure()
         self.connection_frame.grid(row=0, column=0, sticky="nsew")
         ttk.Label(self.connection_frame, text="Connection Frame").grid(row=0, column=0, sticky="nsew")
+        self.connect_button = ttk.Button(self.connection_frame, text="Connect",
+                          command=self.connect_button_command, width=20)
+        self.connect_button.grid(row=1,column=1,sticky="nsew")
 
         self.key_frame.tkraise()
 
+    def connect_button_command(self):
+        print("a")
 
     def key_menu_button_command(self):
         self.key_menu_button.state(["disabled"])
