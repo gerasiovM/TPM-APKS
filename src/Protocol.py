@@ -11,6 +11,7 @@ class Protocol:
     BUFFER_SIZE = 1024
     HEADER_DATA_TYPE_SIZE = 4
     HEADER_DATA_SIZE = 8
+    HEADER_HMAC_SIZE = 64
     FORMAT = 'utf-8'
     DISCONNECT_MSG = '!DISCONNECT'
 
@@ -19,12 +20,15 @@ class Protocol:
         request = f"{len(cmd + '>' + args):0{self.HEADER_DATA_SIZE}}{cmd + '>' + args}"
         return request
 
-    def create_header(self, data_type: str, data_size: int) -> bytes:
-        return self.standardize(data_type, self.HEADER_DATA_TYPE_SIZE) + self.standardize(
-            str(data_size), self.HEADER_DATA_SIZE)
+    def create_header(self, data_type: str, data_size: int, hmac: bytes) -> bytes:
+        return (
+                self.standardize_str(data_type, self.HEADER_DATA_TYPE_SIZE) +
+                self.standardize_str(str(data_size), self.HEADER_DATA_SIZE) +
+                self.standardize(hmac, self.HEADER_HMAC_SIZE)
+        )
 
-    def send_bytes(self, s: socket.socket, data_type: str, data: bytes):
-        header = self.create_header(data_type, len(data))
+    def send_bytes(self, s: socket.socket, data_type: str, signature: bytes, data: bytes):
+        header = self.create_header(data_type, len(data), signature)
         to_send = header + data
         try:
             s.sendall(to_send)
@@ -43,27 +47,29 @@ class Protocol:
             data += received
         return data
 
-    def receive(self, s: socket.socket) -> [bool, bytes]:
+    # returns [valid_msg, data_type, data_hmac, data]
+    def receive(self, s: socket.socket) -> [bool, str, bytes, bytes]:
         data_type = s.recv(self.HEADER_DATA_TYPE_SIZE).lstrip(b'\x00').decode(self.FORMAT)
         print(data_type)
         data_size = s.recv(self.HEADER_DATA_SIZE).lstrip(b'\x00').decode(self.FORMAT)
         print(data_size)
+        # Probably don't need to lstrip, but check on this later if errors
+        data_hmac = s.recv(self.HEADER_HMAC_SIZE).decode(self.FORMAT)
         if not data_size.isnumeric():
             logging.error("Received data size is invalid, aborting")
-            return [False, '']
-        if data_type == "LRG":
+            return [False, data_type, data_hmac, '']
+        if int(data_size) > self.BUFFER_SIZE:
             data = self.receive_large(s, int(data_size))
         else:
             data = s.recv(int(data_size))
-        return data
+        return [True, data_type, data_hmac, data]
 
     def decode(self, data: bytes):
         return data.decode(self.FORMAT)
 
-    def standardize(self, data: str, size: int) -> bytes:
-        return data.encode(self.FORMAT).rjust(size, b'\x00')
+    def standardize_str(self, data: str, size: int) -> bytes:
+        return self.standardize(data.encode(self.FORMAT), size)
 
     @staticmethod
-    def create_rsa_key_pair():
-        private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-        return private_key, private_key.public_key()
+    def standardize(data: bytes, size: int) -> bytes:
+        return data.rjust(size, b'\x00')
