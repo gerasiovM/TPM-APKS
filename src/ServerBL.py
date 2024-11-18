@@ -10,7 +10,7 @@ from cryptography.hazmat.primitives import hmac as hmac_c
 from cryptography.fernet import Fernet
 
 
-class CServerBL:
+class ServerBL:
 
     def __init__(self, host, port):
 
@@ -26,7 +26,7 @@ class CServerBL:
         self._server_socket = None
         self._is_srv_running = True
         self._awaiting_registration = []
-        self._client_handlers: list[CClientHandler] = []
+        self._client_handlers: list[ClientHandler] = []
 
     def get_client_handlers(self):
         return self._client_handlers
@@ -68,7 +68,7 @@ class CServerBL:
                 logging.debug(f"[SERVER_BL] Client connected {client_socket}{address} ")
 
                 # Start Thread
-                cl_handler = CClientHandler(client_socket, address, self._client_handlers, [lambda x: self._awaiting_registration.append(x)])
+                cl_handler = ClientHandler(client_socket, address, self._client_handlers, [lambda x: self._awaiting_registration.append(x)])
                 cl_handler.start()
                 self._client_handlers.append(cl_handler)
                 logging.debug(f"[SERVER_BL] ACTIVE CONNECTION {threading.active_count() - 1}")
@@ -80,7 +80,7 @@ class CServerBL:
             logging.debug(f"[SERVER_BL] Server thread is DONE")
 
 
-class CClientHandler(threading.Thread):
+class ClientHandler(threading.Thread):
 
     _client_socket = None
     _address = None
@@ -162,5 +162,5 @@ class CClientHandler(threading.Thread):
 
 
 if __name__ == "__main__":
-    server = CServerBL("127.0.0.1", 8080)
+    server = ServerBL("127.0.0.1", 8080)
     server.start_server()
