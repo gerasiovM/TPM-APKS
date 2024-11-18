@@ -1,7 +1,8 @@
 import socket
 from datetime import datetime
 import logging
-from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.asymmetric import padding
 
 #LOG_FILE = f'LOG-{datetime.now().strftime("%d%m%Y-%H%M")}.log'
 LOG_FILE = 'LOG.log'
@@ -12,6 +13,12 @@ class Protocol:
     HEADER_DATA_TYPE_SIZE = 4
     HEADER_DATA_SIZE = 8
     HEADER_HMAC_SIZE = 64
+    HASH_ALG = hashes.SHA256
+    PADDING = padding.OAEP(
+        mgf=padding.MGF1(algorithm=HASH_ALG()),
+        algorithm=HASH_ALG(),
+        label=None
+    )
     FORMAT = 'utf-8'
     DISCONNECT_MSG = '!DISCONNECT'
 
