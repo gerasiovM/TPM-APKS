@@ -1,16 +1,13 @@
-import random
-
-from Protocol import LOG_FILE
+from Protocol import LOG_FILE, Protocol
 import logging
 import sqlite3
 import socket
 import threading
 import os
-from cryptography.hazmat.primitives.asymmetric import rsa, padding
+import cryptography.exceptions
 from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives import hmac as hmac_c
 from cryptography.fernet import Fernet
-
-from src.Protocol import Protocol
 
 
 class CServerBL:
@@ -98,7 +95,7 @@ class CClientHandler(threading.Thread):
         self._callbacks = callbacks
         self._p = Protocol()
         self._mode = "KEY"
-        self._secret = None
+        self._hmac_manager = None
         self._fernet = None
         self._connected = False
 
@@ -107,7 +104,7 @@ class CClientHandler(threading.Thread):
         self._connected = True
         while self._connected:
             # 1. Get message from socket and check it
-            valid_data, data_type, data = self._p.receive(self._client_socket)
+            valid_data, data_type, data_hmac, data = self._p.receive(self._client_socket)
             response = ""
             if valid_data:
                 # Logging
@@ -119,45 +116,38 @@ class CClientHandler(threading.Thread):
                     if data_type == "KEY":
                         try:
                             pub_key = serialization.load_pem_public_key(data)
-                            self._secret = os.urandom(128)
+                            secret = os.urandom(128)
                             fernet_key = Fernet.generate_key()
+                            self._hmac_manager = hmac_c.HMAC(secret, self._p.HASH_ALG())
                             self._fernet = Fernet(fernet_key)
-                            response = pub_key.encrypt(plaintext=)
+                            response = pub_key.encrypt(plaintext=(secret + fernet_key), padding=self._p.PADDING)
+                            self._mode = "MAIN"
                         except Exception as e:
                             logging.error("[SERVER_BL] Exception on loading public key : {}".format(e))
                             response = "Public key could not be loaded, make sure that it's in a correct format (PEM)"
                     else:
                         logging.warning("[SERVER_BL] Received data type is not KEY, discarding")
                         response = "Wrong data type, please provide a public key"
+                elif self._mode == "MAIN":
+                    try:
+                        # HMAC verification
+                        hmac_manager_local, self._hmac_manager = self._hmac_manager, self._hmac_manager.copy()
+                        hmac_manager_local.update(data)
+                        hmac_manager_local.verify(data_hmac)
+
+                        # Decrypting
+                        data = self._fernet.decrypt(data)
+                        print(data)
+                    except cryptography.exceptions.InvalidSignature:
+                        logging.warning("[SERVER_BL] Received invalid HMAC, discarding data")
+                        response = "Wrong HMAC, make sure you are using the correct hashing algorithm"
+                    except cryptography.fernet.InvalidToken:
+                        logging.warning("[SERVER_BL] Received data could not be decrypted, discarding")
+                        response = "Data could not be decrypted, make sure you are using the correct key"
             else:
                 logging.warning("[SERVER_BL] Received invalid data")
-            # valid_msg, msg = read_buffer(self._client_socket)
-            # if valid_msg:
-            #     # 2. Save to log
-            #     logging.debug(f"[SERVER_BL] received from {self._address}] - {msg}")
-            #     # 3. If valid command - create response
-            #     command, args = (msg.split(">") + [""])[:2]
-            #     used_protocol = check_cmd(command, self._client_socket, self._callbacks)
-            #     if used_protocol:
-            #         # 4. Create response
-            #         response = used_protocol.create_response(command, args)
-            #         # 5. Save to log
-            #         write_to_log("[SERVER_BL] send - " + response)
-            #         # 6. Send response to the client
-            #         self._client_socket.send(response.encode(used_protocol.FORMAT))
-            #     else:
-            #         # if received command not supported by protocol, just send it back "as is"
-            #         # 4. Create response
-            #         response = "Non-supported cmd"
-            #         response = f"{len(response):0{CProtocol.HEADER_LEN}}{response}"
-            #         # 5. Save to log
-            #         write_to_log("[SERVER_BL] send - " + response)
-            #         # 6. Send response to the client
-            #         self._client_socket.send(response.encode(used_protocol.FORMAT))
-            #
-            #     # Handle DISCONNECT command
-            #     if msg == used_protocol.DISCONNECT_MSG:
-            #         self._connected = False
+                response = "Data is invalid"
+            self._p.send_str(self._client_socket, "MSG", response)
 
         self._client_socket.close()
         logging.debug(f"[SERVER_BL] Thread closed for : {self._address} ")
@@ -172,5 +162,5 @@ class CClientHandler(threading.Thread):
 
 
 if __name__ == "__main__":
-    server = CServerBL(CProtocol.SERVER_HOST, CProtocol.PORT)
+    server = CServerBL("127.0.0.1", 8080)
     server.start_server()
