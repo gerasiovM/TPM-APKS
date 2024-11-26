@@ -12,11 +12,11 @@ class Protocol:
     BUFFER_SIZE = 1024
     HEADER_DATA_TYPE_SIZE = 4
     HEADER_DATA_SIZE = 8
-    HEADER_HMAC_SIZE = 64
-    HASH_ALG = hashes.SHA256
+    HEADER_HMAC_SIZE = 32
+    HASH_ALG = hashes.SHA256()
     PADDING = padding.OAEP(
-        mgf=padding.MGF1(algorithm=HASH_ALG()),
-        algorithm=HASH_ALG(),
+        mgf=padding.MGF1(algorithm=HASH_ALG),
+        algorithm=HASH_ALG,
         label=None
     )
     FORMAT = 'utf-8'
@@ -44,8 +44,8 @@ class Protocol:
             logging.error(e)
             return False
 
-    def send_str(self, s: socket.socket, data_type: str, data: str) -> bool:
-        return self.send_bytes(s, data_type, data.encode(self.FORMAT))
+    def send_str(self, s: socket.socket, data_type: str, signature: bytes, data: str) -> bool:
+        return self.send_bytes(s, data_type, signature, data.encode(self.FORMAT))
 
     def receive_large(self, s: socket.socket, data_size: int) -> bytes:
         data = b''
@@ -57,14 +57,14 @@ class Protocol:
     # returns [valid_msg, data_type, data_hmac, data]
     def receive(self, s: socket.socket) -> [bool, str, bytes, bytes]:
         data_type = s.recv(self.HEADER_DATA_TYPE_SIZE).lstrip(b'\x00').decode(self.FORMAT)
-        print(data_type)
         data_size = s.recv(self.HEADER_DATA_SIZE).lstrip(b'\x00').decode(self.FORMAT)
-        print(data_size)
         # Probably don't need to lstrip, but check on this later if errors
-        data_hmac = s.recv(self.HEADER_HMAC_SIZE).decode(self.FORMAT)
+        data_hmac = s.recv(self.HEADER_HMAC_SIZE)
         if not data_size.isnumeric():
             logging.error("Received data size is invalid, aborting")
             return [False, data_type, data_hmac, '']
+        print(data_type)
+        print(data_size)
         if int(data_size) > self.BUFFER_SIZE:
             data = self.receive_large(s, int(data_size))
         else:
