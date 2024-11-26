@@ -6,7 +6,7 @@ import threading
 import os
 import cryptography.exceptions
 from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives import hmac as hmac_c
+from cryptography.hazmat.primitives import hmac
 from cryptography.fernet import Fernet
 
 
@@ -89,7 +89,6 @@ class ClientHandler(threading.Thread):
         super().__init__()
 
         self._client_socket: socket.socket = client_socket
-        self._client_socket.setblocking(False)
         self._client_handlers = client_handlers
         self._address = address
         self._callbacks = callbacks
@@ -106,6 +105,7 @@ class ClientHandler(threading.Thread):
             # 1. Get message from socket and check it
             valid_data, data_type, data_hmac, data = self._p.receive(self._client_socket)
             response = ""
+            response_data_type = "MSG"
             if valid_data:
                 # Logging
                 if len(data) > 1024:
@@ -115,13 +115,15 @@ class ClientHandler(threading.Thread):
                 if self._mode == "KEY":
                     if data_type == "KEY":
                         try:
+                            print(data)
                             pub_key = serialization.load_pem_public_key(data)
                             secret = os.urandom(128)
                             fernet_key = Fernet.generate_key()
-                            self._hmac_manager = hmac_c.HMAC(secret, self._p.HASH_ALG())
+                            self._hmac_manager = hmac.HMAC(key=secret, algorithm=self._p.HASH_ALG)
                             self._fernet = Fernet(fernet_key)
                             response = pub_key.encrypt(plaintext=(secret + fernet_key), padding=self._p.PADDING)
-                            self._mode = "MAIN"
+                            print(response)
+                            response_data_type = "KEY"
                         except Exception as e:
                             logging.error("[SERVER_BL] Exception on loading public key : {}".format(e))
                             response = "Public key could not be loaded, make sure that it's in a correct format (PEM)"
@@ -131,7 +133,8 @@ class ClientHandler(threading.Thread):
                 elif self._mode == "MAIN":
                     try:
                         # HMAC verification
-                        hmac_manager_local, self._hmac_manager = self._hmac_manager, self._hmac_manager.copy()
+                        print(data_type, data_hmac, data)
+                        hmac_manager_local = self._hmac_manager.copy()
                         hmac_manager_local.update(data)
                         hmac_manager_local.verify(data_hmac)
 
@@ -144,10 +147,25 @@ class ClientHandler(threading.Thread):
                     except cryptography.fernet.InvalidToken:
                         logging.warning("[SERVER_BL] Received data could not be decrypted, discarding")
                         response = "Data could not be decrypted, make sure you are using the correct key"
-            else:
-                logging.warning("[SERVER_BL] Received invalid data")
-                response = "Data is invalid"
-            self._p.send_str(self._client_socket, "MSG", response)
+            # else:
+                # logging.warning("[SERVER_BL] Received invalid data")
+                # response = "Data is invalid"
+
+            if self._mode == "KEY":
+                if type(response) is str:
+                    self._p.send_str(self._client_socket, response_data_type, b"", response)
+                else:
+                    self._p.send_bytes(self._client_socket, response_data_type, b"", response)
+                self._mode = "MAIN"
+            elif self._mode == "MAIN":
+                if type(response) is str:
+                    response = response.encode(Protocol.FORMAT)
+                response = self._fernet.encrypt(response)
+                hmac_manager_local = self._hmac_manager.copy()
+                hmac_manager_local.update(response)
+                response_hmac = hmac_manager_local.finalize()
+                self._p.send_bytes(self._client_socket, response_data_type, response_hmac, response)
+
 
         self._client_socket.close()
         logging.debug(f"[SERVER_BL] Thread closed for : {self._address} ")
@@ -161,6 +179,10 @@ class ClientHandler(threading.Thread):
         return self._address[0], str(self._address[1])
 
 
-if __name__ == "__main__":
+def main():
     server = ServerBL("127.0.0.1", 8080)
     server.start_server()
+
+
+if __name__ == "__main__":
+    main()
