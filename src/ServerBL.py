@@ -141,6 +141,7 @@ class ClientHandler(threading.Thread):
                         # Decrypting
                         data = self._fernet.decrypt(data)
                         print(data)
+                        response = f"Data received! - {data}"
                     except cryptography.exceptions.InvalidSignature:
                         logging.warning("[SERVER_BL] Received invalid HMAC, discarding data")
                         response = "Wrong HMAC, make sure you are using the correct hashing algorithm"
