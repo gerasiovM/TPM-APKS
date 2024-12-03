@@ -17,8 +17,8 @@ class ClientBL:
     def connect(self):
         try:
             self._socket = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
+            # Might have to use settimeout here
             self._socket.connect((self._host,self._port))
-            self._socket.setblocking(False)
             logging.debug(f"[CLIENT_BL] {self._socket.getsockname()} connected")
             return self._socket
         except Exception as e:
@@ -27,7 +27,7 @@ class ClientBL:
 
     def disconnect(self):
         try:
-            self.send(self._p.DISCONNECT_MSG)
+            self.send(self._p.DISCONNECT_MSG, "MSG")
             self._socket.shutdown(socket.SHUT_RDWR)
             self._socket.close()
             logging.debug(f"[CLIENT_BL] {self._socket.getsockname()} disconnected")
@@ -43,6 +43,7 @@ class ClientBL:
             hmac_manager_local = self._hmac_manager.copy()
             hmac_manager_local.update(encrypted_data)
             data_hmac = hmac_manager_local.finalize()
+            print(data_type, data_hmac, encrypted_data)
             self._p.send_bytes(self._socket, data_type, data_hmac, encrypted_data)
             return True
         except Exception as e:
@@ -76,10 +77,29 @@ class ClientBL:
         public_key = private_key.public_key()
         pem_pub = public_key.public_bytes(encoding=serialization.Encoding.PEM,
                                           format=serialization.PublicFormat.SubjectPublicKeyInfo)
+        print(pem_pub)
         self._p.send_bytes(self._socket, "KEY", b"", pem_pub)
-        response_enc = self._p.receive(self._socket)
+        response_enc = self._p.receive(self._socket)[3]
+        print(response_enc)
         response = private_key.decrypt(response_enc, padding=Protocol.PADDING)
         secret = response[:128]
         fernet_key = response[128:]
         self._hmac_manager = hmac.HMAC(key=secret, algorithm=Protocol.HASH_ALG)
         self._fernet = fernet.Fernet(fernet_key)
+
+
+def main():
+    c = ClientBL()
+    c._host = "127.0.0.1"
+    c._port = 8080
+    c.connect()
+    c.key_exchange()
+    c.send("Hello World!", "MSG")
+    msg = input()
+    while msg != "EXIT":
+        c.send(msg, "MSG")
+        msg = input()
+    c.disconnect()
+
+if __name__ == "__main__":
+    main()
