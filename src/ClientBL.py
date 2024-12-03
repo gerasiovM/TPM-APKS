@@ -63,6 +63,7 @@ class ClientBL:
                     hmac_manager_local.verify(data_hmac)
 
                     data = self._fernet.decrypt(data)
+                    return data
                 except cryptography.exceptions.InvalidSignature as e:
                     logging.warning("[CLIENT_BL] Received invalid HMAC, discarding")
                 except fernet.InvalidToken as e:
