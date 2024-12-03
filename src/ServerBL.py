@@ -140,7 +140,9 @@ class ClientHandler(threading.Thread):
 
                         # Decrypting
                         data = self._fernet.decrypt(data)
-                        print(data)
+                        if data == Protocol.DISCONNECT_MSG:
+                            self._mode = "STOP"
+                            logging.info(f"Received disconnect msg from {self._client_socket}")
                     except cryptography.exceptions.InvalidSignature:
                         logging.warning("[SERVER_BL] Received invalid HMAC, discarding data")
                         response = "Wrong HMAC, make sure you are using the correct hashing algorithm"
