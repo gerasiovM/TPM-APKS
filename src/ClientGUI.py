@@ -14,6 +14,7 @@ class MainWindow(QMainWindow, ClientBL):
         loadUi('client.ui', self)
         self.pushButton_connect.clicked.connect(self.connect_pressed)
         self.pushButton_send_key.clicked.connect(self.send_key_pressed)
+        self.pushButton_login.clicked.connect(self.login_pressed)
         self.lineEdit_port.setValidator(QRegularExpressionValidator(QRegularExpression(r"^(6553[0-5]|655[0-2][0-9]|65[0-4][0-9]{2}|6[0-4][0-9]{3}|[1-5][0-9]{4}|[0-9]{1,4})$")))
         self.timer = QTimer(self)
         self.timer.setInterval(100)
@@ -38,10 +39,14 @@ class MainWindow(QMainWindow, ClientBL):
             return
         self._host = host
         self._port = int(port)
-        self.connect()
-        self.key_exchange()
-        self.plainTextEdit_incoming.appendPlainText("Aboba")
-        self._socket.settimeout(0.01)
+        if self.connect():
+            if self.key_exchange():
+                self.pushButton_login.setEnabled(True)
+                self.pushButton_connect.setEnabled(False)
+                self._socket.settimeout(0.01)
+
+    def login_pressed(self):
+        pass
 
     def send_key_pressed(self):
         self.send("Hello, World!", "MSG")
