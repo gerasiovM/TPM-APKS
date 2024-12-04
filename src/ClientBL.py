@@ -14,16 +14,16 @@ class ClientBL:
         self._fernet: fernet.Fernet = None
         self._hmac_manager: hmac.HMAC = None
 
-    def connect(self):
+    def connect(self) -> bool:
         try:
             self._socket = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
             # Might have to use settimeout here
             self._socket.connect((self._host,self._port))
             logging.debug(f"[CLIENT_BL] {self._socket.getsockname()} connected")
-            return self._socket
+            return True
         except Exception as e:
             logging.error("[CLIENT_BL] Exception on connect: {}".format(e))
-            return None
+            return False
 
     def disconnect(self):
         try:
@@ -52,7 +52,7 @@ class ClientBL:
 
     def receive(self) -> bytes:
         if not self._socket:
-            return ""
+            return b""
         try:
             valid_data, data_type, data_hmac, data = self._p.receive(self._socket)
             if valid_data:
@@ -73,20 +73,25 @@ class ClientBL:
         except Exception as e:
             logging.error("[CLIENT_BL] Exception on receive: {}".format(e))
 
-    def key_exchange(self):
-        private_key = rsa.generate_private_key(public_exponent=65537,key_size=2048)
-        public_key = private_key.public_key()
-        pem_pub = public_key.public_bytes(encoding=serialization.Encoding.PEM,
-                                          format=serialization.PublicFormat.SubjectPublicKeyInfo)
-        print(pem_pub)
-        self._p.send_bytes(self._socket, "KEY", b"", pem_pub)
-        response_enc = self._p.receive(self._socket)[3]
-        print(response_enc)
-        response = private_key.decrypt(response_enc, padding=Protocol.PADDING)
-        secret = response[:128]
-        fernet_key = response[128:]
-        self._hmac_manager = hmac.HMAC(key=secret, algorithm=Protocol.HASH_ALG)
-        self._fernet = fernet.Fernet(fernet_key)
+    def key_exchange(self) -> bool:
+        try:
+            private_key = rsa.generate_private_key(public_exponent=65537,key_size=2048)
+            public_key = private_key.public_key()
+            pem_pub = public_key.public_bytes(encoding=serialization.Encoding.PEM,
+                                              format=serialization.PublicFormat.SubjectPublicKeyInfo)
+            print(pem_pub)
+            self._p.send_bytes(self._socket, "KEY", b"", pem_pub)
+            response_enc = self._p.receive(self._socket)[3]
+            print(response_enc)
+            response = private_key.decrypt(response_enc, padding=Protocol.PADDING)
+            secret = response[:128]
+            fernet_key = response[128:]
+            self._hmac_manager = hmac.HMAC(key=secret, algorithm=Protocol.HASH_ALG)
+            self._fernet = fernet.Fernet(fernet_key)
+            return True
+        except Exception as e:
+            logging.error("[CLIENT_BL] Exception when attempting key exchange: {}".format(e))
+            return False
 
 
 def main():
