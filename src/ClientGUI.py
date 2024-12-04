@@ -1,21 +1,22 @@
 import sys
 from ClientBL import ClientBL
 from PyQt6.QtGui import QRegularExpressionValidator
-from PyQt6.QtWidgets import QApplication, QMainWindow
+from PyQt6.QtWidgets import QApplication, QMainWindow, QWidget
 from PyQt6.QtCore import QRegularExpression, QTimer
 from PyQt6.uic import loadUi
 
 from src.Protocol import Protocol
 
 
-class MainWindow(QMainWindow, ClientBL):
+class ClientGUI(QMainWindow, ClientBL):
     def __init__(self):
-        super(MainWindow, self).__init__()
+        super(ClientGUI, self).__init__()
         loadUi('client.ui', self)
         self.pushButton_connect.clicked.connect(self.connect_pressed)
         self.pushButton_send_key.clicked.connect(self.send_key_pressed)
         self.pushButton_login.clicked.connect(self.login_pressed)
         self.lineEdit_port.setValidator(QRegularExpressionValidator(QRegularExpression(r"^(6553[0-5]|655[0-2][0-9]|65[0-4][0-9]{2}|6[0-4][0-9]{3}|[1-5][0-9]{4}|[0-9]{1,4})$")))
+        self.plainTextEdit_incoming.setReadOnly(True)
         self.timer = QTimer(self)
         self.timer.setInterval(100)
         self.timer.timeout.connect(self.update_incoming)
@@ -43,6 +44,8 @@ class MainWindow(QMainWindow, ClientBL):
             if self.key_exchange():
                 self.pushButton_login.setEnabled(True)
                 self.pushButton_connect.setEnabled(False)
+                self.lineEdit_host.setReadOnly(True)
+                self.lineEdit_port.setReadOnly(True)
                 self._socket.settimeout(0.01)
 
     def login_pressed(self):
@@ -73,9 +76,18 @@ class MainWindow(QMainWindow, ClientBL):
         return False
 
 
+class LoginGUI(QWidget):
+    def __init__(self):
+        super(LoginGUI, self).__init__()
+        loadUi('login.ui', self)
+        self.pushButton_login_user.clicked.connect()
+        self.pushButton_login_admin.clicked.connect()
+        #sex of monkeys
+
+
 def main():
     app = QApplication(sys.argv)
-    window = MainWindow()
+    window = ClientGUI()
     window.show()
     sys.exit(app.exec())
 
