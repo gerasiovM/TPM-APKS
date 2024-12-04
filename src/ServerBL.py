@@ -81,10 +81,6 @@ class ServerBL:
 
 
 class ClientHandler(threading.Thread):
-
-    _client_socket = None
-    _address = None
-
     def __init__(self, client_socket, address: tuple[str, int], client_handlers, callbacks):
         super().__init__()
 
@@ -152,11 +148,12 @@ class ClientHandler(threading.Thread):
                 # logging.warning("[SERVER_BL] Received invalid data")
                 # response = "Data is invalid"
 
+            sent = True
             if self._mode == "KEY":
                 if type(response) is str:
-                    self._p.send_str(self._client_socket, response_data_type, b"", response)
+                    sent = self._p.send_str(self._client_socket, response_data_type, b"", response)
                 else:
-                    self._p.send_bytes(self._client_socket, response_data_type, b"", response)
+                    sent = self._p.send_bytes(self._client_socket, response_data_type, b"", response)
                 self._mode = "MAIN"
             elif self._mode == "MAIN":
                 if type(response) is str:
@@ -165,11 +162,14 @@ class ClientHandler(threading.Thread):
                 hmac_manager_local = self._hmac_manager.copy()
                 hmac_manager_local.update(response)
                 response_hmac = hmac_manager_local.finalize()
-                self._p.send_bytes(self._client_socket, response_data_type, response_hmac, response)
+                sent = self._p.send_bytes(self._client_socket, response_data_type, response_hmac, response)
+
+            if not sent:
+                self.stop()
 
 
         self._client_socket.close()
-        logging.debug(f"[SERVER_BL] Thread closed for : {self._address} ")
+        logging.info(f"[SERVER_BL] Thread closed for : {self._address} ")
         self._client_handlers.remove(self)
 
     def stop(self):
