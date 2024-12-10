@@ -11,6 +11,7 @@ class ClientBL:
         self._host: str = None
         self._port: int = None
         self._p = Protocol()
+        self._logged_in = False
         self._fernet: fernet.Fernet = None
         self._hmac_manager: hmac.HMAC = None
 
@@ -72,6 +73,12 @@ class ClientBL:
                 pass
         except Exception as e:
             logging.error("[CLIENT_BL] Exception on receive: {}".format(e))
+        return b""
+
+    def login(self, login: str, password: str):
+        login = Protocol.standardize(login[:20].encode(Protocol.FORMAT), Protocol.LOGIN_SIZE)
+        self.send(login + password.encode(Protocol.FORMAT), "LGN")
+
 
     def key_exchange(self) -> bool:
         try:

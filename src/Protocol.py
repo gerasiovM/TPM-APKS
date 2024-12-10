@@ -13,6 +13,7 @@ class Protocol:
     HEADER_DATA_TYPE_SIZE = 4
     HEADER_DATA_SIZE = 8
     HEADER_HMAC_SIZE = 32
+    LOGIN_SIZE = 20
     HASH_ALG = hashes.SHA256()
     PADDING = padding.OAEP(
         mgf=padding.MGF1(algorithm=HASH_ALG),
@@ -84,3 +85,9 @@ class Protocol:
     @staticmethod
     def standardize(data: bytes, size: int) -> bytes:
         return data.rjust(size, b'\x00')
+
+    @staticmethod
+    def hash(data: bytes):
+        digest = hashes.Hash(Protocol.HASH_ALG)
+        digest.update(data)
+        return digest.finalize()

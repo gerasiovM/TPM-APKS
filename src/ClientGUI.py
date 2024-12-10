@@ -49,7 +49,9 @@ class ClientGUI(QMainWindow, ClientBL):
                 self._socket.settimeout(0.01)
 
     def login_pressed(self):
-        pass
+        self.login_wnd = LoginGUI([self.login, self.receive, self._logged_in])
+        self.login_wnd.show()
+
 
     def send_key_pressed(self):
         self.send("Hello, World!", "MSG")
@@ -77,12 +79,39 @@ class ClientGUI(QMainWindow, ClientBL):
 
 
 class LoginGUI(QWidget):
-    def __init__(self):
+    def __init__(self, callbacks):
         super(LoginGUI, self).__init__()
         loadUi('login.ui', self)
-        self.pushButton_login_user.clicked.connect()
-        self.pushButton_login_admin.clicked.connect()
-        #sex of monkeys
+
+        self.login = callbacks[0]
+        self.receive = callbacks[1]
+        self.logged_in = True
+
+        self.pushButton_login_user.clicked.connect(self.login_user_pressed)
+        self.pushButton_login_admin.clicked.connect(self.login_admin_pressed)
+
+    def login_user_pressed(self):
+        login = self.lineEdit_login.text()
+        password = self.lineEdit_password.text()
+        if not login:
+            self.label_login_info.setText("Login field must be filled")
+            return
+        self.label_login_info.setText("")
+        if not password:
+            self.label_password_info.setText("Password field must be filled")
+            return
+        self.label_password_info.setText("")
+        self.login(login, password)
+        login_response = self.receive().decode(Protocol.FORMAT)
+        print(login_response)
+        if login_response == "Success":
+            self.logged_in = True
+            self.close()
+        else:
+            self.label_password_info.setText(login_response)
+
+    def login_admin_pressed(self):
+        pass
 
 
 def main():
