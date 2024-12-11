@@ -57,6 +57,7 @@ class ClientBL:
         try:
             valid_data, data_type, data_hmac, data = self._p.receive(self._socket)
             if valid_data:
+                logging.info(f"[CLIENT_BL] Received message from server - {data}")
                 try:
                     # HMAC verification
                     hmac_manager_local = self._hmac_manager.copy()
@@ -108,9 +109,11 @@ def main():
     c.connect()
     c.key_exchange()
     c.send("Hello World!", "MSG")
+    print(c.receive().decode(Protocol.FORMAT))
     msg = input()
     while msg != "EXIT":
         c.send(msg, "MSG")
+        print(c.receive().decode(Protocol.FORMAT))
         msg = input()
     c.disconnect()
 
