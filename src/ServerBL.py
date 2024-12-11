@@ -1,3 +1,5 @@
+import argon2
+
 from Protocol import LOG_FILE, Protocol
 import logging
 import sqlite3
@@ -8,6 +10,7 @@ import cryptography.exceptions
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives import hmac
 from cryptography.fernet import Fernet
+from argon2 import argon2_hash
 
 
 class ServerBL:
@@ -17,10 +20,16 @@ class ServerBL:
         # Open the log file in write mode, which truncates the file to zero length
         with open(LOG_FILE, 'w'):
             pass  # This block is empty intentionally
-        self._con = sqlite3.connect("users.db")
-        # cursor = self._con.cursor()
-        # cursor.execute('''CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY,login TEXT NOT NULL,password TEXT NOT NULL,key TEXT NOT NULL)''')
-        # cursor.close()
+        self._con = sqlite3.connect("users.db", check_same_thread=False)
+        cursor = self._con.cursor()
+        cursor.execute('''CREATE TABLE IF NOT EXISTS users (
+        	`id` integer primary key NOT NULL UNIQUE,
+        	`login` TEXT NOT NULL UNIQUE,
+        	`hash` BLOB NOT NULL,
+        	`salt` BLOB NOT NULL,
+        	`public_key` BLOB NOT NULL
+        );''')
+        cursor.close()
         self._host = host
         self._port = port
         self._server_socket = None
@@ -34,21 +43,42 @@ class ServerBL:
     def get_awaiting_registration(self):
         return self._awaiting_registration
 
+    def get_user_exists(self, login):
+        cursor = self._con.cursor()
+        exists = cursor.execute('''SELECT 1 FROM users WHERE login = ? LIMIT 1''',
+                                (login,)).fetchone()
+        cursor.close()
+        return bool(exists)
+
+    def get_user_salt(self, login):
+        cursor = self._con.cursor()
+        salt = cursor.execute('''SELECT salt FROM users WHERE login = ? LIMIT 1''',
+                              (login,)).fetchone()[0]
+        cursor.close()
+        return salt
+
+    def get_user_correct_password(self, login, password_hash):
+        cursor = self._con.cursor()
+        required_hash = cursor.execute('''SELECT hash FROM users WHERE login = ? LIMIT 1''',
+                                       (login,)).fetchone()[0]
+        for i, (b1_byte, b2_byte) in enumerate(zip(required_hash, password_hash)):
+            if b1_byte != b2_byte:
+                print(f"Difference at position {i}: {b1_byte} != {b2_byte}")
+        if password_hash == required_hash:
+            return True
+        return False
+
     def stop_server(self):
         try:
             self._is_srv_running = False
             # Close server socket
+            if len(self._client_handlers) > 0:
+                for client_thread in self._client_handlers:
+                    client_thread.stop()
+
             if self._server_socket is not None:
                 self._server_socket.close()
                 self._server_socket = None
-
-            if len(self._client_handlers) > 0:
-                # Waiting to close all opened threads
-                # for client_thread in self._client_handlers:
-                #     client_thread.join()
-                # write_to_log(f"[SERVER_BL] All Client threads are closed")
-                for client_thread in self._client_handlers:
-                    client_thread.stop()
 
         except Exception as e:
             logging.error("[SERVER_BL] Exception in Stop_Server fn : {}".format(e))
@@ -68,7 +98,8 @@ class ServerBL:
                 logging.debug(f"[SERVER_BL] Client connected {client_socket}{address} ")
 
                 # Start Thread
-                cl_handler = ClientHandler(client_socket, address, self._client_handlers, [lambda x: self._awaiting_registration.append(x)])
+                cl_handler = ClientHandler(client_socket, address, self._client_handlers,
+                                           [self.get_user_exists, self.get_user_salt, self.get_user_correct_password])
                 cl_handler.start()
                 self._client_handlers.append(cl_handler)
                 logging.debug(f"[SERVER_BL] ACTIVE CONNECTION {threading.active_count() - 1}")
@@ -81,10 +112,6 @@ class ServerBL:
 
 
 class ClientHandler(threading.Thread):
-
-    _client_socket = None
-    _address = None
-
     def __init__(self, client_socket, address: tuple[str, int], client_handlers, callbacks):
         super().__init__()
 
@@ -130,7 +157,7 @@ class ClientHandler(threading.Thread):
                     else:
                         logging.warning("[SERVER_BL] Received data type is not KEY, discarding")
                         response = "Wrong data type, please provide a public key"
-                elif self._mode == "MAIN":
+                else:
                     try:
                         # HMAC verification
                         print(data_type, data_hmac, data)
@@ -140,9 +167,25 @@ class ClientHandler(threading.Thread):
 
                         # Decrypting
                         data = self._fernet.decrypt(data)
-                        if data == Protocol.DISCONNECT_MSG:
-                            self._mode = "STOP"
-                            logging.info(f"Received disconnect msg from {self._client_socket}")
+                        print(data)
+                        response = f"Data received! - {data}"
+                        if data_type == "LGN":
+                            if self._mode != "NOT_LOGGED_IN":
+                                response = "Already logged in"
+                            login = data[:20].lstrip(b'\x00').decode(Protocol.FORMAT)
+                            print("LOGIN:", login)
+                            if not self._callbacks[0](login):
+                                response = "User doesn't exist"
+                            else:
+                                password = data[20:]
+                                salt = self._callbacks[1](login)
+                                password_hash = argon2_hash(password, salt)
+                                if self._callbacks[2](login, password_hash):
+                                    self._mode = "LOGGED_IN_USER"
+                                    response = "Success"
+                                else:
+                                    response = "Login and password don't match"
+
                     except cryptography.exceptions.InvalidSignature:
                         logging.warning("[SERVER_BL] Received invalid HMAC, discarding data")
                         response = "Wrong HMAC, make sure you are using the correct hashing algorithm"
@@ -153,24 +196,27 @@ class ClientHandler(threading.Thread):
                 # logging.warning("[SERVER_BL] Received invalid data")
                 # response = "Data is invalid"
 
+            sent = True
             if self._mode == "KEY":
                 if type(response) is str:
-                    self._p.send_str(self._client_socket, response_data_type, b"", response)
+                    sent = self._p.send_str(self._client_socket, response_data_type, b"", response)
                 else:
-                    self._p.send_bytes(self._client_socket, response_data_type, b"", response)
-                self._mode = "MAIN"
-            elif self._mode == "MAIN":
+                    sent = self._p.send_bytes(self._client_socket, response_data_type, b"", response)
+                self._mode = "NOT_LOGGED_IN"
+            else:
                 if type(response) is str:
                     response = response.encode(Protocol.FORMAT)
                 response = self._fernet.encrypt(response)
                 hmac_manager_local = self._hmac_manager.copy()
                 hmac_manager_local.update(response)
                 response_hmac = hmac_manager_local.finalize()
-                self._p.send_bytes(self._client_socket, response_data_type, response_hmac, response)
+                sent = self._p.send_bytes(self._client_socket, response_data_type, response_hmac, response)
+            if not sent:
+                self.stop()
 
 
         self._client_socket.close()
-        logging.debug(f"[SERVER_BL] Thread closed for : {self._address} ")
+        logging.info(f"[SERVER_BL] Thread closed for : {self._address} ")
         self._client_handlers.remove(self)
 
     def stop(self):
@@ -182,7 +228,7 @@ class ClientHandler(threading.Thread):
 
 
 def main():
-    server = ServerBL("127.0.0.1", 8080)
+    server = ServerBL("127.0.0.1", 8081)
     server.start_server()
 
 

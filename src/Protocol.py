@@ -13,6 +13,7 @@ class Protocol:
     HEADER_DATA_TYPE_SIZE = 4
     HEADER_DATA_SIZE = 8
     HEADER_HMAC_SIZE = 32
+    LOGIN_SIZE = 20
     HASH_ALG = hashes.SHA256()
     PADDING = padding.OAEP(
         mgf=padding.MGF1(algorithm=HASH_ALG),
@@ -56,20 +57,24 @@ class Protocol:
 
     # returns [valid_msg, data_type, data_hmac, data]
     def receive(self, s: socket.socket) -> [bool, str, bytes, bytes]:
-        data_type = s.recv(self.HEADER_DATA_TYPE_SIZE).lstrip(b'\x00').decode(self.FORMAT)
-        data_size = s.recv(self.HEADER_DATA_SIZE).lstrip(b'\x00').decode(self.FORMAT)
-        # Probably don't need to lstrip, but check on this later if errors
-        data_hmac = s.recv(self.HEADER_HMAC_SIZE)
-        if not data_size.isnumeric():
-            logging.error("Received data size is invalid, aborting")
-            return [False, data_type, data_hmac, '']
-        print(data_type)
-        print(data_size)
-        if int(data_size) > self.BUFFER_SIZE:
-            data = self.receive_large(s, int(data_size))
-        else:
-            data = s.recv(int(data_size))
-        return [True, data_type, data_hmac, data]
+        try:
+            data_type = s.recv(self.HEADER_DATA_TYPE_SIZE).lstrip(b'\x00').decode(self.FORMAT)
+            data_size = s.recv(self.HEADER_DATA_SIZE).lstrip(b'\x00').decode(self.FORMAT)
+            # Probably don't need to lstrip, but check on this later if errors
+            data_hmac = s.recv(self.HEADER_HMAC_SIZE)
+            if not data_size.isnumeric():
+                logging.error("Received data size is invalid, aborting")
+                return [False, data_type, data_hmac, '']
+            print(data_type)
+            print(data_size)
+            if int(data_size) > self.BUFFER_SIZE:
+                data = self.receive_large(s, int(data_size))
+            else:
+                data = s.recv(int(data_size))
+            return [True, data_type, data_hmac, data]
+        # For sockets that use timeout
+        except TimeoutError:
+            return [False, "", b"", b""]
 
     def decode(self, data: bytes):
         return data.decode(self.FORMAT)
@@ -80,3 +85,9 @@ class Protocol:
     @staticmethod
     def standardize(data: bytes, size: int) -> bytes:
         return data.rjust(size, b'\x00')
+
+    @staticmethod
+    def hash(data: bytes):
+        digest = hashes.Hash(Protocol.HASH_ALG)
+        digest.update(data)
+        return digest.finalize()
