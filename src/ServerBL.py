@@ -1,5 +1,3 @@
-import argon2
-
 from Protocol import LOG_FILE, Protocol
 import logging
 import sqlite3
@@ -7,10 +5,11 @@ import socket
 import threading
 import os
 import cryptography.exceptions
-from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives import hmac
 from cryptography.fernet import Fernet
-from argon2 import argon2_hash
+from argon2 import PasswordHasher
+from base64 import b64decode
 
 
 class ServerBL:
@@ -27,7 +26,7 @@ class ServerBL:
         	`login` TEXT NOT NULL UNIQUE,
         	`hash` BLOB NOT NULL,
         	`salt` BLOB NOT NULL,
-        	`public_key` BLOB NOT NULL
+        	`public_key` BLOB
         );''')
         cursor.close()
         self._host = host
@@ -61,9 +60,8 @@ class ServerBL:
         cursor = self._con.cursor()
         required_hash = cursor.execute('''SELECT hash FROM users WHERE login = ? LIMIT 1''',
                                        (login,)).fetchone()[0]
-        for i, (b1_byte, b2_byte) in enumerate(zip(required_hash, password_hash)):
-            if b1_byte != b2_byte:
-                print(f"Difference at position {i}: {b1_byte} != {b2_byte}")
+        print(password_hash)
+        print(required_hash)
         if password_hash == required_hash:
             return True
         return False
@@ -179,7 +177,8 @@ class ClientHandler(threading.Thread):
                             else:
                                 password = data[20:]
                                 salt = self._callbacks[1](login)
-                                password_hash = argon2_hash(password, salt)
+                                ph = PasswordHasher()
+                                password_hash = ph.hash(password, salt=salt).split("$")[-1]
                                 if self._callbacks[2](login, password_hash):
                                     self._mode = "LOGGED_IN_USER"
                                     response = "Success"
@@ -211,6 +210,7 @@ class ClientHandler(threading.Thread):
                 hmac_manager_local.update(response)
                 response_hmac = hmac_manager_local.finalize()
                 sent = self._p.send_bytes(self._client_socket, response_data_type, response_hmac, response)
+                logging.info(f"[SERVER_BL] Sent message to client - ///////{response}")
             if not sent:
                 self.stop()
 
@@ -228,7 +228,7 @@ class ClientHandler(threading.Thread):
 
 
 def main():
-    server = ServerBL("127.0.0.1", 8081)
+    server = ServerBL("127.0.0.1", 8080)
     server.start_server()
 
 
