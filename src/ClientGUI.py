@@ -19,15 +19,15 @@ class ClientGUI(QMainWindow, ClientBL):
         self.plainTextEdit_incoming.setReadOnly(True)
         self.timer = QTimer(self)
         self.timer.setInterval(100)
-        self.timer.timeout.connect(self.update_incoming)
-        self.timer.start()
+        # self.timer.timeout.connect(self.update_incoming)
+        # self.timer.start()
 
-    def update_incoming(self):
-        data = self.receive()
-        # print("a")
-        while data:
-            self.plainTextEdit_incoming.appendPlainText(data.decode(Protocol.FORMAT))
-            data = self.receive()
+    # def update_incoming(self):
+    #     data = self.receive()
+    #     # print("a")
+    #     while data:
+    #         self.plainTextEdit_incoming.appendPlainText(data.decode(Protocol.FORMAT))
+    #         data = self.receive()
 
     def connect_pressed(self):
         host = self.lineEdit_host.text()
@@ -104,9 +104,15 @@ class LoginGUI(QWidget):
         self.login(login, password)
         login_response = self.receive().decode(Protocol.FORMAT)
         print(login_response)
+        it = 0
+        while login_response == b"".decode(Protocol.FORMAT) and it != 100:
+            login_response = self.receive().decode(Protocol.FORMAT)
+            it += 1
         if login_response == "Success":
             self.logged_in = True
             self.close()
+        elif login_response == "":
+            self.label_password_info.setText("Couldn't get response from server")
         else:
             self.label_password_info.setText(login_response)
 
