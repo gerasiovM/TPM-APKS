@@ -1,3 +1,5 @@
+from tpm2_pytss import TPM2B_PUBLIC
+
 from Protocol import LOG_FILE, Protocol
 import logging
 import sqlite3
@@ -9,7 +11,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives import hmac
 from cryptography.fernet import Fernet
 from argon2 import PasswordHasher
-from base64 import b64decode
+from tpm2_pytss.utils import make_credential
 
 
 class ServerBL:
@@ -122,6 +124,7 @@ class ClientHandler(threading.Thread):
         self._hmac_manager = None
         self._fernet = None
         self._connected = False
+        self._cred_secret = None
 
     def run(self):
         # This code run in separate thread for every client
@@ -170,20 +173,29 @@ class ClientHandler(threading.Thread):
                         if data_type == "LGN":
                             if self._mode != "NOT_LOGGED_IN":
                                 response = "Already logged in"
-                            login = data[:20].lstrip(b'\x00').decode(Protocol.FORMAT)
-                            print("LOGIN:", login)
-                            if not self._callbacks[0](login):
-                                response = "User doesn't exist"
                             else:
-                                password = data[20:]
-                                salt = self._callbacks[1](login)
-                                ph = PasswordHasher()
-                                password_hash = ph.hash(password, salt=salt).split("$")[-1]
-                                if self._callbacks[2](login, password_hash):
-                                    self._mode = "LOGGED_IN_USER"
-                                    response = "Success"
+                                login = data[:20].lstrip(b'\x00').decode(Protocol.FORMAT)
+                                print("LOGIN:", login)
+                                if not self._callbacks[0](login):
+                                    response = "User doesn't exist"
                                 else:
-                                    response = "Login and password don't match"
+                                    password = data[20:]
+                                    salt = self._callbacks[1](login)
+                                    ph = PasswordHasher()
+                                    password_hash = ph.hash(password, salt=salt).split("$")[-1]
+                                    if self._callbacks[2](login, password_hash):
+                                        self._mode = "LOGGED_IN_USER"
+                                        response = "Success"
+                                        print("AAAAAAAAAAAAAA")
+                                    else:
+                                        response = "Login and password don't match"
+                        if data_type == "AUTH":
+                            ek_pub, ak_pub, ek_cert = data.split(b"/|\\/|\\")
+                            TPM2B_PUBLIC.from_pem(ek_pub)
+                            cred_secret = os.urandom(20)
+                            cred_blob, cred_enc_secret = make_credential(TPM2B_PUBLIC.from_pem(ek_pub), cred_secret, TPM2B_PUBLIC.from_pem(ak_pub).get_name())
+                            response = cred_blob + Protocol.DELIMITER + cred_enc_secret
+                            response_data_type = "CRED"
 
                     except cryptography.exceptions.InvalidSignature:
                         logging.warning("[SERVER_BL] Received invalid HMAC, discarding data")
