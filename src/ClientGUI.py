@@ -14,6 +14,7 @@ class ClientGUI(QMainWindow, ClientBL):
         loadUi('client.ui', self)
         self.pushButton_connect.clicked.connect(self.connect_pressed)
         self.pushButton_send_key.clicked.connect(self.send_key_pressed)
+        self.pushButton_send_key.setEnabled(False)
         self.pushButton_login.clicked.connect(self.login_pressed)
         self.lineEdit_port.setValidator(QRegularExpressionValidator(QRegularExpression(r"^(6553[0-5]|655[0-2][0-9]|65[0-4][0-9]{2}|6[0-4][0-9]{3}|[1-5][0-9]{4}|[0-9]{1,4})$")))
         self.plainTextEdit_incoming.setReadOnly(True)
@@ -43,6 +44,7 @@ class ClientGUI(QMainWindow, ClientBL):
         if self.connect():
             if self.key_exchange():
                 self.pushButton_login.setEnabled(True)
+                self.pushButton_send_key.setEnabled(True)
                 self.pushButton_connect.setEnabled(False)
                 self.lineEdit_host.setReadOnly(True)
                 self.lineEdit_port.setReadOnly(True)
@@ -51,10 +53,15 @@ class ClientGUI(QMainWindow, ClientBL):
     def login_pressed(self):
         self.login_wnd = LoginGUI([self.login, self.receive, self._logged_in])
         self.login_wnd.show()
+        self._logged_in = self.login_wnd.logged_in
 
 
     def send_key_pressed(self):
-        self.send("Hello, World!", "MSG")
+        if not self._logged_in:
+            self.label_error.setText("You need to be logged in to send the key")
+        else:
+            self.label_error.setText("")
+            self.authenticate()
 
     @staticmethod
     def validate_host(host: str) -> bool:
@@ -103,11 +110,11 @@ class LoginGUI(QWidget):
         self.label_password_info.setText("")
         self.login(login, password)
         login_response = self.receive().decode(Protocol.FORMAT)
-        print(login_response)
         it = 0
         while login_response == b"".decode(Protocol.FORMAT) and it != 100:
             login_response = self.receive().decode(Protocol.FORMAT)
             it += 1
+        print(login_response)
         if login_response == "Success":
             self.logged_in = True
             self.close()
