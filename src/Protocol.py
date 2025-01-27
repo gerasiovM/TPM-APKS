@@ -14,6 +14,7 @@ class Protocol:
     HEADER_DATA_SIZE = 8
     HEADER_HMAC_SIZE = 32
     LOGIN_SIZE = 20
+    DELIMITER = "/|\\/|\\"
     HASH_ALG = hashes.SHA256()
     PADDING = padding.OAEP(
         mgf=padding.MGF1(algorithm=HASH_ALG),
