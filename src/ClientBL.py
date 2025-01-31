@@ -108,7 +108,7 @@ class ClientBL:
     def authenticate(self):
         try:
             with ESAPI() as ectx:
-                nv_read = NVReadEK()
+                nv_read = NVReadEK(ectx)
                 ek_cert, ek_template = create_ek_template("EK-RSA2048", nv_read)
                 self.ek_handle, ek_pub, _, _, _ = ectx.create_primary(TPM2B_SENSITIVE_CREATE(), ek_template, ESYS_TR.RH_ENDORSEMENT)
                 session = self.setup_session(ectx, self.ek_handle)
@@ -125,6 +125,8 @@ class ClientBL:
                 print(certinfo)
         except TSS2_Exception as e:
             logging.error("[CLIENT_BL] Exception on authenticate, confirm that the user has the permission to interact with the tpm {}".format(e))
+        except Exception as e:
+            logging.error("[CLIENT_BL] Unknown exception on authenticate: {}".format(e))
 
 
 
