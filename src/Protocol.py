@@ -24,11 +24,6 @@ class Protocol:
     FORMAT = 'utf-8'
     DISCONNECT_MSG = '!DISCONNECT'
 
-    def create_request(self, cmd: str, args: str) -> str:
-        """Create a valid protocol message, will be sent by client, with length field"""
-        request = f"{len(cmd + '>' + args):0{self.HEADER_DATA_SIZE}}{cmd + '>' + args}"
-        return request
-
     def create_header(self, data_type: str, data_size: int, hmac: bytes) -> bytes:
         return (
                 self.standardize_str(data_type, self.HEADER_DATA_TYPE_SIZE) +
@@ -36,7 +31,7 @@ class Protocol:
                 self.standardize(hmac, self.HEADER_HMAC_SIZE)
         )
 
-    def send_bytes(self, s: socket.socket, data_type: str, signature: bytes, data: bytes):
+    def send_bytes(self, s: socket.socket, data_type: str, signature: bytes, data: bytes) -> bool:
         header = self.create_header(data_type, len(data), signature)
         to_send = header + data
         try:
@@ -77,7 +72,7 @@ class Protocol:
         except TimeoutError:
             return [False, "", b"", b""]
 
-    def decode(self, data: bytes):
+    def decode(self, data: bytes) -> str:
         return data.decode(self.FORMAT)
 
     def standardize_str(self, data: str, size: int) -> bytes:
@@ -88,7 +83,7 @@ class Protocol:
         return data.rjust(size, b'\x00')
 
     @staticmethod
-    def hash(data: bytes):
+    def hash(data: bytes) -> bytes:
         digest = hashes.Hash(Protocol.HASH_ALG)
         digest.update(data)
         return digest.finalize()

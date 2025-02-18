@@ -46,7 +46,7 @@ class CertificateManager:
         cert_der = cert_to_check.public_bytes(encoding=serialization.Encoding.DER)
         return any(cert_der == ca_cert.public_bytes(encoding=serialization.Encoding.DER) for ca_cert in valid_cert_list)
 
-    def check_certificate(self, cert=None):
+    def check_certificate(self, cert=None) -> bool:
         if not cert:
             cert = self.certificate
         if cert.issuer != cert.subject:
