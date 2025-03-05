@@ -67,7 +67,7 @@ class CertificateManager:
             except InvalidSignature:
                 return False
         else:
-            result = self.check_certificate_root(cert, self.load_certificates_from_pem(file_path="resources/certs/ca-certificates.crt"))
+            result = self.check_certificate_root(cert, self.load_certificates_from_pem(file_path="../resources/certs/ca-certificates.crt"))
             return result
 
     def check_key(self, der_key):
