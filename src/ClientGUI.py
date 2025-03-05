@@ -42,7 +42,7 @@ class ClientGUI(QMainWindow, ClientBL):
         self._host = host
         self._port = int(port)
         if self.connect():
-            if self.key_exchange():
+            if self.establish_secure_connection():
                 self.pushButton_login.setEnabled(True)
                 self.pushButton_send_key.setEnabled(True)
                 self.pushButton_connect.setEnabled(False)
