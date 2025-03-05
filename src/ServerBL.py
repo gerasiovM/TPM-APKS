@@ -1,17 +1,18 @@
-from tpm2_pytss import TPM2B_PUBLIC
-
+from tpm2_pytss import TPM2B_PUBLIC, TPMT_SIGNATURE
 from Protocol import LOG_FILE, Protocol
 import logging
 import sqlite3
 import socket
 import threading
 import os
+import base64
 import cryptography.exceptions
-from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives import hmac
+from cryptography.hazmat.primitives import serialization, hmac
 from cryptography.fernet import Fernet
 from argon2 import PasswordHasher
 from tpm2_pytss.utils import make_credential
+
+from src.CertificateManager import CertificateManager
 
 
 class ServerBL:
@@ -22,6 +23,7 @@ class ServerBL:
         with open(LOG_FILE, 'w'):
             pass  # This block is empty intentionally
         self._con = sqlite3.connect("users.db", check_same_thread=False)
+        self._con_lock = threading.Lock()
         cursor = self._con.cursor()
         cursor.execute('''CREATE TABLE IF NOT EXISTS users (
         	`id` integer primary key NOT NULL UNIQUE,
@@ -35,16 +37,12 @@ class ServerBL:
         self._port = port
         self._server_socket = None
         self._is_srv_running = True
-        self._awaiting_registration = []
         self._client_handlers: list[ClientHandler] = []
 
     def get_client_handlers(self):
         return self._client_handlers
 
-    def get_awaiting_registration(self):
-        return self._awaiting_registration
-
-    def get_user_exists(self, login):
+    def get_user_exists(self, login) -> bool:
         cursor = self._con.cursor()
         exists = cursor.execute('''SELECT 1 FROM users WHERE login = ? LIMIT 1''',
                                 (login,)).fetchone()
@@ -64,9 +62,24 @@ class ServerBL:
                                        (login,)).fetchone()[0]
         print(password_hash)
         print(required_hash)
+        cursor.close()
         if password_hash == required_hash:
             return True
         return False
+
+    def check_user_has_key(self, login):
+        cursor = self._con.cursor()
+        result = cursor.execute('''SELECT public_key FROM users WHERE login = ?''', (login,)).fetchone()[0]
+        cursor.close()
+        return bool(result)
+
+    def save_user_key(self, login, public_key):
+        with self._con_lock:
+            print(login)
+            cursor = self._con.cursor()
+            cursor.execute('''UPDATE users SET public_key = ? WHERE login = ?''', (public_key, login))
+            self._con.commit()
+            cursor.close()
 
     def stop_server(self):
         try:
@@ -99,7 +112,7 @@ class ServerBL:
 
                 # Start Thread
                 cl_handler = ClientHandler(client_socket, address, self._client_handlers,
-                                           [self.get_user_exists, self.get_user_salt, self.get_user_correct_password])
+                                           [self.get_user_exists, self.get_user_salt, self.get_user_correct_password, self.check_user_has_key, self.save_user_key])
                 cl_handler.start()
                 self._client_handlers.append(cl_handler)
                 logging.debug(f"[SERVER_BL] ACTIVE CONNECTION {threading.active_count() - 1}")
@@ -118,13 +131,21 @@ class ClientHandler(threading.Thread):
         self._client_socket: socket.socket = client_socket
         self._client_handlers = client_handlers
         self._address = address
-        self._callbacks = callbacks
+
+        self._get_user_exists = callbacks[0]
+        self._get_user_salt = callbacks[1]
+        self._get_user_correct_password = callbacks[2]
+        self._check_user_has_key = callbacks[3]
+        self._save_user_key = callbacks[4]
+
         self._p = Protocol()
         self._mode = "KEY"
         self._hmac_manager = None
+        self._login = None
         self._fernet = None
+        self._cred_fernet = None
+        self._ak_pub = None
         self._connected = False
-        self._cred_secret = None
 
     def run(self):
         # This code run in separate thread for every client
@@ -141,88 +162,14 @@ class ClientHandler(threading.Thread):
                 else:
                     logging.debug(f"[SERVER_BL] Received from {self._address} data - {data}")
                 if self._mode == "KEY":
-                    if data_type == "KEY":
-                        try:
-                            print(data)
-                            pub_key = serialization.load_pem_public_key(data)
-                            secret = os.urandom(128)
-                            fernet_key = Fernet.generate_key()
-                            self._hmac_manager = hmac.HMAC(key=secret, algorithm=self._p.HASH_ALG)
-                            self._fernet = Fernet(fernet_key)
-                            response = pub_key.encrypt(plaintext=(secret + fernet_key), padding=self._p.PADDING)
-                            print(response)
-                            response_data_type = "KEY"
-                        except Exception as e:
-                            logging.error("[SERVER_BL] Exception on loading public key : {}".format(e))
-                            response = "Public key could not be loaded, make sure that it's in a correct format (PEM)"
-                    else:
-                        logging.warning("[SERVER_BL] Received data type is not KEY, discarding")
-                        response = "Wrong data type, please provide a public key"
+                    response, response_data_type = self.process_key_exchange(data, data_type)
                 else:
-                    try:
-                        # HMAC verification
-                        print(data_type, data_hmac, data)
-                        hmac_manager_local = self._hmac_manager.copy()
-                        hmac_manager_local.update(data)
-                        hmac_manager_local.verify(data_hmac)
-
-                        # Decrypting
-                        data = self._fernet.decrypt(data)
-                        print(data)
-                        response = f"Data received! - {data}"
-                        if data_type == "LGN":
-                            if self._mode != "NOT_LOGGED_IN":
-                                response = "Already logged in"
-                            else:
-                                login = data[:20].lstrip(b'\x00').decode(Protocol.FORMAT)
-                                print("LOGIN:", login)
-                                if not self._callbacks[0](login):
-                                    response = "User doesn't exist"
-                                else:
-                                    password = data[20:]
-                                    salt = self._callbacks[1](login)
-                                    ph = PasswordHasher()
-                                    password_hash = ph.hash(password, salt=salt).split("$")[-1]
-                                    if self._callbacks[2](login, password_hash):
-                                        self._mode = "LOGGED_IN_USER"
-                                        response = "Success"
-                                        print("AAAAAAAAAAAAAA")
-                                    else:
-                                        response = "Login and password don't match"
-                        if data_type == "AUTH":
-                            ek_pub, ak_pub, ek_cert = data.split(b"/|\\/|\\")
-                            TPM2B_PUBLIC.from_pem(ek_pub)
-                            cred_secret = os.urandom(20)
-                            cred_blob, cred_enc_secret = make_credential(TPM2B_PUBLIC.from_pem(ek_pub), cred_secret, TPM2B_PUBLIC.from_pem(ak_pub).get_name())
-                            response = cred_blob + Protocol.DELIMITER + cred_enc_secret
-                            response_data_type = "CRED"
-
-                    except cryptography.exceptions.InvalidSignature:
-                        logging.warning("[SERVER_BL] Received invalid HMAC, discarding data")
-                        response = "Wrong HMAC, make sure you are using the correct hashing algorithm"
-                    except cryptography.fernet.InvalidToken:
-                        logging.warning("[SERVER_BL] Received data could not be decrypted, discarding")
-                        response = "Data could not be decrypted, make sure you are using the correct key"
+                    response, response_data_type = self.process_authenticated_data(data, data_type, data_hmac)
             # else:
                 # logging.warning("[SERVER_BL] Received invalid data")
                 # response = "Data is invalid"
 
-            sent = True
-            if self._mode == "KEY":
-                if type(response) is str:
-                    sent = self._p.send_str(self._client_socket, response_data_type, b"", response)
-                else:
-                    sent = self._p.send_bytes(self._client_socket, response_data_type, b"", response)
-                self._mode = "NOT_LOGGED_IN"
-            else:
-                if type(response) is str:
-                    response = response.encode(Protocol.FORMAT)
-                response = self._fernet.encrypt(response)
-                hmac_manager_local = self._hmac_manager.copy()
-                hmac_manager_local.update(response)
-                response_hmac = hmac_manager_local.finalize()
-                sent = self._p.send_bytes(self._client_socket, response_data_type, response_hmac, response)
-                logging.info(f"[SERVER_BL] Sent message to client - ///////{response}")
+            sent = self.send_response(response, response_data_type)
             if not sent:
                 self.stop()
 
@@ -231,16 +178,148 @@ class ClientHandler(threading.Thread):
         logging.info(f"[SERVER_BL] Thread closed for : {self._address} ")
         self._client_handlers.remove(self)
 
+    def process_key_exchange(self, data, data_type):
+        response, response_data_type = "", "MSG"
+        if data_type == "KEY":
+            try:
+                print(data)
+                pub_key = serialization.load_pem_public_key(data)
+                secret = os.urandom(128)
+                fernet_key = Fernet.generate_key()
+                self._hmac_manager = hmac.HMAC(key=secret, algorithm=self._p.HASH_ALG)
+                self._fernet = Fernet(fernet_key)
+                print("FERNEEEEEEET")
+                response = pub_key.encrypt(plaintext=(secret + fernet_key), padding=self._p.PADDING)
+                print(response)
+                response_data_type = "KEY"
+            except Exception as e:
+                logging.error("[SERVER_BL] Exception on loading public key : {}".format(e))
+                response = "Public key could not be loaded, make sure that it's in a correct format (PEM)"
+        else:
+            logging.warning("[SERVER_BL] Received data type is not KEY, discarding")
+            response = "Wrong data type, please provide a public key"
+        return response, response_data_type
+
+    def process_authenticated_data(self, data, data_type, data_hmac):
+        response, response_data_type = "", "MSG"
+        try:
+            # HMAC verification
+            print(data_type, data_hmac, data)
+            hmac_manager_local = self._hmac_manager.copy()
+            hmac_manager_local.update(data)
+            hmac_manager_local.verify(data_hmac)
+
+            # Decrypting
+            data = self._fernet.decrypt(data)
+            print(data)
+            response = f"Data received! - {data}"
+            if data_type == "LGN":
+                response = self.handle_login_user(data)
+            if data_type == "LGNA":
+                response = self.handle_login_admin(data)
+            if data_type == "AUTH":
+                response = self.handle_enrollment(data)
+            if data_type == "KEY2":
+                response = self.handle_key_submission(data)
+        except cryptography.exceptions.InvalidSignature:
+            logging.warning("[SERVER_BL] Received invalid HMAC, discarding data")
+            response = "Wrong HMAC, make sure you are using the correct hashing algorithm"
+        except cryptography.fernet.InvalidToken:
+            logging.warning("[SERVER_BL] Received data could not be decrypted, discarding")
+            response = "Data could not be decrypted, make sure you are using the correct key"
+        return response, response_data_type
+
+    def handle_login_user(self, data):
+        if self._mode != "NOT_LOGGED_IN":
+            response = "Already logged in"
+        else:
+            login = data[:20].lstrip(b'\x00').decode(Protocol.FORMAT)
+            print("LOGIN:", login)
+            if not self._get_user_exists(login):
+                response = "User doesn't exist"
+            else:
+                password = data[20:]
+                salt = self._get_user_salt(login)
+                ph = PasswordHasher()
+                password_hash = ph.hash(password, salt=salt).split("$")[-1]
+                if self._get_user_correct_password(login, password_hash):
+                    self._mode = "LOGGED_IN_USER"
+                    self._login = login
+                    response = "Success"
+                    print("AAAAAAAAAAAAAA")
+                else:
+                    response = "Login and password don't match"
+        return response
+
+    def handle_login_admin(self, data):
+        pass
+
+    def handle_enrollment(self, data):
+        if self._mode == "LOGGED_IN_USER":
+            ek_pub_bytes, ak_pub_bytes, ek_cert = data.split(self._p.DELIMITER)
+            ek_pub = TPM2B_PUBLIC.unmarshal(ek_pub_bytes)[0]
+            self._ak_pub = TPM2B_PUBLIC.unmarshal(ak_pub_bytes)[0]
+            cm = CertificateManager(ek_cert)
+            if not cm.check_key(ek_pub.to_der()) or not cm.check_certificate():
+                response = "Invalid certificate"
+            else:
+                cred_secret = os.urandom(32)
+                print("Cred secret: " + str(cred_secret))
+                self._cred_fernet = Fernet(base64.urlsafe_b64encode(cred_secret))
+                cred_blob, cred_enc_secret = make_credential(ek_pub, cred_secret, self._ak_pub.get_name())
+                print(cred_blob.marshal())
+                print(cred_enc_secret.marshal())
+                response = cred_blob.marshal() + Protocol.DELIMITER + cred_enc_secret.marshal()
+                response_data_type = "CRED"
+        else:
+            response = "User not logged in, can't accept authentication request"
+        return response
+
+    def handle_key_submission(self, data):
+        if self._mode == "LOGGED_IN_USER" and not self._check_user_has_key(self._login):
+            if self._ak_pub is not None:
+                key_pub_bytes, signature_bytes = data.split(self._p.DELIMITER)
+                key_pub_bytes_decrypted = self._cred_fernet.decrypt(key_pub_bytes)
+                signature = TPMT_SIGNATURE.unmarshal(signature_bytes)[0]
+                signature.verify_signature(self._ak_pub, key_pub_bytes_decrypted)
+                key_pub = TPM2B_PUBLIC.unmarshal(key_pub_bytes_decrypted)[0]
+                print("SAVING USER KEY")
+                self._save_user_key(self._login, key_pub.to_pem())
+                response = "Success"
+            else:
+                response = "No associated ak with the connection"
+        else:
+            response = "User not logged in, can't accept key"
+        return response
+
+    def send_response(self, response, response_data_type):
+        if self._mode == "KEY":
+            if type(response) is str:
+                sent = self._p.send_str(self._client_socket, response_data_type, b"", response)
+            else:
+                sent = self._p.send_bytes(self._client_socket, response_data_type, b"", response)
+            self._mode = "NOT_LOGGED_IN"
+        else:
+            if type(response) is str:
+                response = response.encode(Protocol.FORMAT)
+            response = self._fernet.encrypt(response)
+            hmac_manager_local = self._hmac_manager.copy()
+            hmac_manager_local.update(response)
+            response_hmac = hmac_manager_local.finalize()
+            sent = self._p.send_bytes(self._client_socket, response_data_type, response_hmac, response)
+            logging.info(f"[SERVER_BL] Sent message to client - ///////{response}")
+        return sent
+
     def stop(self):
         self._connected = False
 
 
-    def get_address(self):
+    def get_address(self) -> tuple[str, str]:
         return self._address[0], str(self._address[1])
 
 
 def main():
-    server = ServerBL("127.0.0.1", 8080)
+    server = ServerBL("127.0.0.1", 8081)
     server.start_server()
 
 
