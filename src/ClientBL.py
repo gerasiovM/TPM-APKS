@@ -1,15 +1,20 @@
+import base64
 import socket
 import logging
 from Protocol import Protocol
+from KeyManager import KeyManager
+from templates import parent_template, child_template
+import threading
 import cryptography.exceptions
 from cryptography import fernet
 from cryptography.hazmat.primitives import hmac, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from tpm2_pytss import ESAPI, TPMT_SYM_DEF, TPM2_ALG, TPMU_SYM_KEY_BITS, TPMU_SYM_MODE, TPM2_SE, TPMA_SESSION, \
-    TPM2B_ID_OBJECT, TPM2B_ENCRYPTED_SECRET, TSS2_Exception
+    TPM2B_ID_OBJECT, TPM2B_ENCRYPTED_SECRET, TSS2_Exception, TPMT_TK_HASHCHECK, TPMT_SIG_SCHEME
 from tpm2_pytss.utils import NVReadEK, create_ek_template
-from tpm2_pytss.types import TPM2B_SENSITIVE_CREATE
-from tpm2_pytss.constants import ESYS_TR
+from tpm2_pytss.types import TPM2B_SENSITIVE_CREATE, TPM2_HANDLE
+from tpm2_pytss.constants import ESYS_TR, TPM2_ST, TPM2_RH
+
 
 class ClientBL:
     def __init__(self):
@@ -20,8 +25,14 @@ class ClientBL:
         self._logged_in = False
         self._fernet: fernet.Fernet = None
         self._hmac_manager: hmac.HMAC = None
-        self._ek_handle: ESYS_TR = None
-        self._ak_handle: ESYS_TR = None
+        self.parent_creation_thread = threading.Thread(target=self.check_and_create_threading)
+
+    @staticmethod
+    def check_and_create_threading():
+        with ESAPI() as ectx:
+            km = KeyManager(ectx)
+            if km.get_key_persistent("storage_primary_key") is None:
+                ClientBL.create_storage_primary_key(ectx)
 
     def connect(self) -> bool:
         try:
@@ -62,7 +73,7 @@ class ClientBL:
     def send_no_enc(self, data: bytes or str, data_type: str) -> bool:
         if type(data) is str:
             data = data.encode(Protocol.FORMAT)
-        self._p.send_bytes(self._socket, data_type, b"", data)
+        return self._p.send_bytes(self._socket, data_type, b"", data)
 
     def receive(self) -> bytes:
         if not self._socket:
@@ -90,7 +101,34 @@ class ClientBL:
         return b""
 
     @staticmethod
-    def setup_session(ectx, ek_handle):
+    def create_storage_primary_key(ectx):
+        storage_primary_handle, storage_primary_pub, _, _, _ = ectx.create_primary(
+            in_sensitive=TPM2B_SENSITIVE_CREATE(),
+            in_public=parent_template,
+            primary_handle=ESYS_TR.OWNER
+        )
+        km = KeyManager(ectx)
+        handle = km.find_available_persistent_handle("storage_primary_key")
+        ectx.evict_control(ESYS_TR.OWNER, storage_primary_handle, handle)
+        km.save_key_handle("storage_primary_key", handle)
+        return handle
+
+    @staticmethod
+    def create_storage_key(ectx, parent_handle):
+        storage_priv, storage_pub, _, _, _ = ectx.create(
+            parent_handle=parent_handle,
+            in_sensitive=None,
+            in_public=child_template
+        )
+        storage_handle = ectx.load(parent_handle, storage_priv, storage_pub)
+        km = KeyManager(ectx)
+        handle = km.find_available_persistent_handle("storage_key")
+        ectx.evict_control(ESYS_TR.OWNER, storage_handle, handle)
+        km.save_key_handle("storage_key", handle)
+        return handle
+
+    @staticmethod
+    def setup_session(ectx, ek_handle) -> ESYS_TR:
         sym = TPMT_SYM_DEF(algorithm=TPM2_ALG.XOR,
                            keyBits=TPMU_SYM_KEY_BITS(exclusiveOr=TPM2_ALG.SHA256),
                            mode=TPMU_SYM_MODE(aes=TPM2_ALG.CFB))
@@ -107,35 +145,57 @@ class ClientBL:
 
     def authenticate(self):
         try:
-            with ESAPI() as ectx:
+            with ESAPI(tcti="tabrmd") as ectx:
                 nv_read = NVReadEK(ectx)
                 ek_cert, ek_template = create_ek_template("EK-RSA2048", nv_read)
-                self.ek_handle, ek_pub, _, _, _ = ectx.create_primary(TPM2B_SENSITIVE_CREATE(), ek_template, ESYS_TR.RH_ENDORSEMENT)
-                session = self.setup_session(ectx, self.ek_handle)
-                ak_priv, ak_pub, _, _, _ = ectx.create(self.ek_handle, in_sensitive=None, session1=session)
-                session = self.setup_session(ectx, self.ek_handle)
-                self.ak_handle = ectx.load(self.ek_handle, ak_priv, ak_pub, session1=session)
-                self.send(ek_pub.to_pem() + Protocol.DELIMITER + ak_pub.to_pem() + Protocol.DELIMITER + ek_cert, "AUTH")
+                ek_handle, ek_pub, _, _, _ = ectx.create_primary(TPM2B_SENSITIVE_CREATE(), ek_template, ESYS_TR.RH_ENDORSEMENT)
+                session = self.setup_session(ectx, ek_handle)
+                ak_priv, ak_pub, _, _, _ = ectx.create(ek_handle, in_sensitive=None, session1=session)
+                session = self.setup_session(ectx, ek_handle)
+                ak_handle = ectx.load(ek_handle, ak_priv, ak_pub, session1=session)
+                self.send(ek_pub.marshal() + Protocol.DELIMITER + ak_pub.marshal() + Protocol.DELIMITER + ek_cert, "AUTH")
                 response = self.receive()
                 while not response:
                     response = self.receive()
                 credblob, secret = response.split(Protocol.DELIMITER)
-                session = self.setup_session(ectx, self.ek_handle)
-                certinfo = ectx.activate_credential(self.ak_handle, self.ek_handle, TPM2B_ID_OBJECT.unmarshal(credblob), TPM2B_ENCRYPTED_SECRET.unmarshal(secret), session2=session)[2:]
-                print(certinfo)
+                print(credblob)
+                print(secret)
+                session = self.setup_session(ectx, ek_handle)
+                certinfo = ectx.activate_credential(ak_handle, ek_handle, TPM2B_ID_OBJECT.unmarshal(credblob)[0], TPM2B_ENCRYPTED_SECRET.unmarshal(secret)[0], session2=session).marshal()[2:]
+                print("Certinfo: " + str(certinfo))
+                km = KeyManager(ectx)
+                handle = km.get_key_persistent("storage_primary_key")
+                if handle is None:
+                    handle = self.create_storage_primary_key(ectx)
+                parent_handle = ectx.tr_from_tpmpublic(TPM2_HANDLE(handle))
+                handle = km.get_key_persistent("storage_key")
+                if handle is None:
+                    handle = self.create_storage_key(ectx, parent_handle)
+                key_handle = ectx.tr_from_tpmpublic(TPM2_HANDLE(handle))
+                key_pub = ectx.read_public(key_handle)[0]
+                validation = TPMT_TK_HASHCHECK(tag=TPM2_ST.HASHCHECK, hierarchy=TPM2_RH.OWNER)
+                digest, ticket = ectx.hash(key_pub.marshal(), hash_alg=TPM2_ALG.SHA256, hierarchy=ESYS_TR.OWNER)
+                scheme = TPMT_SIG_SCHEME(scheme=TPM2_ALG.RSASSA)
+                scheme.details.any.hashAlg = TPM2_ALG.SHA256
+                signature = ectx.sign(key_handle=ak_handle,
+                                      digest=digest,
+                                      in_scheme=scheme,
+                                      validation=validation)
+                cred_fernet = fernet.Fernet(base64.urlsafe_b64encode(certinfo))
+                self.send(cred_fernet.encrypt(key_pub.marshal()) + self._p.DELIMITER + signature.marshal(), "KEY2")
         except TSS2_Exception as e:
             logging.error("[CLIENT_BL] Exception on authenticate, confirm that the user has the permission to interact with the tpm {}".format(e))
-        except Exception as e:
-            logging.error("[CLIENT_BL] Unknown exception on authenticate: {}".format(e))
+        # except Exception as e:
+        #     logging.error("[CLIENT_BL] Unknown exception on authenticate: {}".format(e))
 
 
 
-    def login(self, login: str, password: str):
+    def login(self, login: str, password: str) -> bool:
         login = Protocol.standardize(login[:20].encode(Protocol.FORMAT), Protocol.LOGIN_SIZE)
-        self.send(login + password.encode(Protocol.FORMAT), "LGN")
+        return self.send(login + password.encode(Protocol.FORMAT), "LGN")
 
 
-    def key_exchange(self) -> bool:
+    def establish_secure_connection(self) -> bool:
         try:
             private_key = rsa.generate_private_key(public_exponent=65537,key_size=2048)
             public_key = private_key.public_key()
@@ -161,7 +221,7 @@ def main():
     c._host = "127.0.0.1"
     c._port = 8080
     c.connect()
-    c.key_exchange()
+    c.establish_secure_connection()
     c.send("Hello World!", "MSG")
     print(c.receive().decode(Protocol.FORMAT))
     msg = input()
