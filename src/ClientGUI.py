@@ -11,7 +11,7 @@ from src.Protocol import Protocol
 class ClientGUI(QMainWindow, ClientBL):
     def __init__(self):
         super(ClientGUI, self).__init__()
-        loadUi('client.ui', self)
+        loadUi('../resources/ui/client.ui', self)
         self.pushButton_connect.clicked.connect(self.connect_pressed)
         self.pushButton_send_key.clicked.connect(self.send_key_pressed)
         self.pushButton_send_key.setEnabled(False)
@@ -51,14 +51,15 @@ class ClientGUI(QMainWindow, ClientBL):
                 self._socket.settimeout(0.01)
 
     def login_pressed(self):
-        self.login_wnd = LoginGUI([self.login, self.receive, self._logged_in])
+        self.login_wnd = LoginGUI([self.login, self.login_admin, self.receive])
         self.login_wnd.show()
         self._logged_in = self.login_wnd.logged_in
 
 
+
     def send_key_pressed(self):
-        if not self._logged_in:
-            self.label_error.setText("You need to be logged in to send the key")
+        if not self._logged_in == "User":
+            self.label_error.setText("You need to be logged in as user to send the key")
         else:
             self.label_error.setText("")
             self.authenticate()
@@ -88,11 +89,12 @@ class ClientGUI(QMainWindow, ClientBL):
 class LoginGUI(QWidget):
     def __init__(self, callbacks):
         super(LoginGUI, self).__init__()
-        loadUi('login.ui', self)
+        loadUi('../resources/ui/login.ui', self)
 
         self.login = callbacks[0]
-        self.receive = callbacks[1]
-        self.logged_in = True
+        self.login_admin = callbacks[1]
+        self.receive = callbacks[2]
+        self.logged_in = None
 
         self.pushButton_login_user.clicked.connect(self.login_user_pressed)
         self.pushButton_login_admin.clicked.connect(self.login_admin_pressed)
@@ -108,23 +110,25 @@ class LoginGUI(QWidget):
             self.label_password_info.setText("Password field must be filled")
             return
         self.label_password_info.setText("")
-        self.login(login, password)
-        login_response = self.receive().decode(Protocol.FORMAT)
-        it = 0
-        while login_response == b"".decode(Protocol.FORMAT) and it != 100:
-            login_response = self.receive().decode(Protocol.FORMAT)
-            it += 1
-        print(login_response)
-        if login_response == "Success":
-            self.logged_in = True
+        success, response = self.login(login, password)
+        if success:
+            self.logged_in = "User"
             self.close()
-        elif login_response == "":
-            self.label_password_info.setText("Couldn't get response from server")
         else:
-            self.label_password_info.setText(login_response)
+            self.label_login_info.setText(response)
 
     def login_admin_pressed(self):
-        pass
+        login = self.lineEdit_login.text()
+        if not login():
+            self.label_login_info.setText("Login field must be filled")
+            return
+        self.label_login_info.setText("")
+        success, response = self.login_admin()
+        if success:
+            self.logged_in = "Admin"
+            self.close()
+        else:
+            self.label_login_info.setText(response)
 
 
 def main():
