@@ -7,7 +7,8 @@ import threading
 import os
 import base64
 import cryptography.exceptions
-from cryptography.hazmat.primitives import serialization, hmac
+from cryptography.hazmat.primitives import serialization, hmac, hashes
+from cryptography.hazmat.primitives.asymmetric import rsa, padding
 from cryptography.fernet import Fernet
 from argon2 import PasswordHasher
 from tpm2_pytss.utils import make_credential
@@ -39,24 +40,17 @@ class ServerBL:
         self._is_srv_running = True
         self._client_handlers: list[ClientHandler] = []
 
-    def get_client_handlers(self):
+    def check_client_handlers(self):
         return self._client_handlers
 
-    def get_user_exists(self, login) -> bool:
+    def check_user_exists(self, login) -> bool:
         cursor = self._con.cursor()
         exists = cursor.execute('''SELECT 1 FROM users WHERE login = ? LIMIT 1''',
                                 (login,)).fetchone()
         cursor.close()
         return bool(exists)
 
-    def get_user_salt(self, login):
-        cursor = self._con.cursor()
-        salt = cursor.execute('''SELECT salt FROM users WHERE login = ? LIMIT 1''',
-                              (login,)).fetchone()[0]
-        cursor.close()
-        return salt
-
-    def get_user_correct_password(self, login, password_hash):
+    def check_user_correct_password(self, login, password_hash):
         cursor = self._con.cursor()
         required_hash = cursor.execute('''SELECT hash FROM users WHERE login = ? LIMIT 1''',
                                        (login,)).fetchone()[0]
@@ -72,6 +66,20 @@ class ServerBL:
         result = cursor.execute('''SELECT public_key FROM users WHERE login = ?''', (login,)).fetchone()[0]
         cursor.close()
         return bool(result)
+
+
+    def get_user_salt(self, login):
+        cursor = self._con.cursor()
+        salt = cursor.execute('''SELECT salt FROM users WHERE login = ? LIMIT 1''',
+                              (login,)).fetchone()[0]
+        cursor.close()
+        return salt
+
+    def get_user_key(self, login):
+        cursor = self._con.cursor()
+        key = cursor.execute('''SELECT public_key FROM users WHERE login = ?''', (login,)).fetchone()[0]
+        cursor.close()
+        return key
 
     def save_user_key(self, login, public_key):
         with self._con_lock:
@@ -112,7 +120,13 @@ class ServerBL:
 
                 # Start Thread
                 cl_handler = ClientHandler(client_socket, address, self._client_handlers,
-                                           [self.get_user_exists, self.get_user_salt, self.get_user_correct_password, self.check_user_has_key, self.save_user_key])
+                                           [
+                                               self.check_user_exists,
+                                               self.check_user_correct_password,
+                                               self.check_user_has_key,
+                                               self.get_user_salt,
+                                               self.get_user_key,
+                                               self.save_user_key])
                 cl_handler.start()
                 self._client_handlers.append(cl_handler)
                 logging.debug(f"[SERVER_BL] ACTIVE CONNECTION {threading.active_count() - 1}")
@@ -132,11 +146,12 @@ class ClientHandler(threading.Thread):
         self._client_handlers = client_handlers
         self._address = address
 
-        self._get_user_exists = callbacks[0]
-        self._get_user_salt = callbacks[1]
-        self._get_user_correct_password = callbacks[2]
-        self._check_user_has_key = callbacks[3]
-        self._save_user_key = callbacks[4]
+        self._check_user_exists = callbacks[0]
+        self._check_user_correct_password = callbacks[1]
+        self._check_user_has_key = callbacks[2]
+        self._get_user_salt = callbacks[3]
+        self._get_user_key = callbacks[4]
+        self._save_user_key = callbacks[5]
 
         self._p = Protocol()
         self._mode = "KEY"
@@ -144,6 +159,7 @@ class ClientHandler(threading.Thread):
         self._login = None
         self._fernet = None
         self._cred_fernet = None
+        self._admin_check_fernet = None
         self._ak_pub = None
         self._connected = False
 
@@ -215,10 +231,10 @@ class ClientHandler(threading.Thread):
             response = f"Data received! - {data}"
             if data_type == "LGN":
                 response = self.handle_login_user(data)
-            if data_type == "LGNA":
-                response = self.handle_login_admin(data)
+            if data_type == "LGNA" or data_type == "LGNB":
+                response = self.handle_login_admin(data, data_type)
             if data_type == "AUTH":
-                response = self.handle_enrollment(data)
+                response, response_data_type = self.handle_enrollment(data)
             if data_type == "KEY2":
                 response = self.handle_key_submission(data)
         except cryptography.exceptions.InvalidSignature:
@@ -235,14 +251,14 @@ class ClientHandler(threading.Thread):
         else:
             login = data[:20].lstrip(b'\x00').decode(Protocol.FORMAT)
             print("LOGIN:", login)
-            if not self._get_user_exists(login):
+            if not self._check_user_exists(login):
                 response = "User doesn't exist"
             else:
                 password = data[20:]
                 salt = self._get_user_salt(login)
                 ph = PasswordHasher()
                 password_hash = ph.hash(password, salt=salt).split("$")[-1]
-                if self._get_user_correct_password(login, password_hash):
+                if self._check_user_correct_password(login, password_hash):
                     self._mode = "LOGGED_IN_USER"
                     self._login = login
                     response = "Success"
@@ -251,10 +267,35 @@ class ClientHandler(threading.Thread):
                     response = "Login and password don't match"
         return response
 
-    def handle_login_admin(self, data):
-        pass
+    def handle_login_admin(self, data, data_type):
+        response, response_data_type = "Something went wrong", "MSG"
+        if self._mode != "NOT_LOGGED_IN":
+            response = "Already logged in"
+        else:
+            if data_type == "LGNA":
+                pem_key = self._get_user_key()
+                key = serialization.load_pem_public_key(pem_key)
+                new_fernet_key = Fernet.generate_key()
+                self._admin_check_fernet = Fernet(new_fernet_key)
+                encrypted_secret = key.encrypt(new_fernet_key, padding=Protocol.PADDING)
+                response = encrypted_secret
+                response_data_type = "LGNA"
+            elif data_type == "LGNB":
+                if self._admin_check_fernet:
+                    try:
+                        confirmation = self._admin_check_fernet.decrypt(data)
+                        self._fernet, self._admin_check_fernet = self._admin_check_fernet, None
+                        self._mode = "LOGGED_IN_ADMIN"
+                        response = "Success"
+                    except cryptography.fernet.InvalidToken:
+                        response = "Failure"
+                        logging.warning("[SERVER_BL] Could not decrypt admin login confirmation message")
+                else:
+                    response = "Wrong LGN order"
+        return response, response_data_type
 
     def handle_enrollment(self, data):
+        response_data_type = "MSG"
         if self._mode == "LOGGED_IN_USER":
             ek_pub_bytes, ak_pub_bytes, ek_cert = data.split(self._p.DELIMITER)
             ek_pub = TPM2B_PUBLIC.unmarshal(ek_pub_bytes)[0]
@@ -273,7 +314,7 @@ class ClientHandler(threading.Thread):
                 response_data_type = "CRED"
         else:
             response = "User not logged in, can't accept authentication request"
-        return response
+        return response, response_data_type
 
     def handle_key_submission(self, data):
         if self._mode == "LOGGED_IN_USER" and not self._check_user_has_key(self._login):
