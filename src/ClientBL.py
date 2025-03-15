@@ -10,9 +10,9 @@ from cryptography import fernet
 from cryptography.hazmat.primitives import hmac, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from tpm2_pytss import ESAPI, TPMT_SYM_DEF, TPM2_ALG, TPMU_SYM_KEY_BITS, TPMU_SYM_MODE, TPM2_SE, TPMA_SESSION, \
-    TPM2B_ID_OBJECT, TPM2B_ENCRYPTED_SECRET, TSS2_Exception, TPMT_TK_HASHCHECK, TPMT_SIG_SCHEME
+    TPM2B_ID_OBJECT, TPM2B_ENCRYPTED_SECRET, TSS2_Exception, TPMT_TK_HASHCHECK, TPMT_SIG_SCHEME, TPMT_RSA_DECRYPT
 from tpm2_pytss.utils import NVReadEK, create_ek_template
-from tpm2_pytss.types import TPM2B_SENSITIVE_CREATE, TPM2_HANDLE
+from tpm2_pytss.types import TPM2B_SENSITIVE_CREATE, TPM2_HANDLE, TPMU_ASYM_SCHEME, TPMS_SCHEME_HASH
 from tpm2_pytss.constants import ESYS_TR, TPM2_ST, TPM2_RH
 
 
@@ -22,8 +22,9 @@ class ClientBL:
         self._host: str = None
         self._port: int = None
         self._p = Protocol()
-        self._logged_in = False
+        self._logged_in = None
         self._fernet: fernet.Fernet = None
+        self._temp_admin_fernet: fernet.Fernet = None
         self._hmac_manager: hmac.HMAC = None
         self.parent_creation_thread = threading.Thread(target=self.check_and_create_threading)
 
@@ -184,15 +185,53 @@ class ClientBL:
                 cred_fernet = fernet.Fernet(base64.urlsafe_b64encode(certinfo))
                 self.send(cred_fernet.encrypt(key_pub.marshal()) + self._p.DELIMITER + signature.marshal(), "KEY2")
         except TSS2_Exception as e:
-            logging.error("[CLIENT_BL] Exception on authenticate, confirm that the user has the permission to interact with the tpm {}".format(e))
+            logging.error("[CLIENT_BL] Exception on authenticate, confirm that the user has the permission to interact with the tpm. Error: {}".format(e))
         # except Exception as e:
         #     logging.error("[CLIENT_BL] Unknown exception on authenticate: {}".format(e))
 
 
 
-    def login(self, login: str, password: str) -> bool:
+    def login(self, login: str, password: str) -> [bool, str]:
         login = Protocol.standardize(login[:20].encode(Protocol.FORMAT), Protocol.LOGIN_SIZE)
-        return self.send(login + password.encode(Protocol.FORMAT), "LGN")
+        self.send(login + password.encode(Protocol.FORMAT), "LGN")
+        login_response = self.receive().decode(Protocol.FORMAT)
+        it = 0
+        while login_response == "" and it != 100:
+            login_response = self.receive().decode(Protocol.FORMAT)
+            it += 1
+        if login_response == "Success":
+            return True, ""
+        elif login_response == "":
+            return False, "Could not get a response from server"
+        else:
+            return False, login_response
+
+    def login_admin(self, login: str) -> [bool, str]:
+        try:
+            with ESAPI(tcti="tabrmd") as ectx:
+                km = KeyManager(ectx)
+                persistent_handle = km.get_key_persistent("storage_key")
+                if not persistent_handle:
+                    logging.error("No storage key found, can't admin login")
+                    return False, "No key found on computer, can't login"
+                storage_key_handle = ectx.tr_from_tpmpublic(TPM2_HANDLE(persistent_handle))
+                self.send(login, "LGNA")
+                enc_secret = self.receive()
+                scheme = TPMT_RSA_DECRYPT(
+                    scheme=TPM2_ALG.OAEP,
+                    details=TPMU_ASYM_SCHEME(oaep=TPMS_SCHEME_HASH(hashAlg=TPM2_ALG.SHA256))
+                )
+                fernet_key = ectx.rsa_decrypt(storage_key_handle, enc_secret, scheme).marshal()
+                self._temp_admin_fernet = fernet.Fernet(fernet_key)
+                self.send(self._temp_admin_fernet.encrypt(b"Answer"), "LGNB")
+                response = self.receive().decode(Protocol.FORMAT)
+                if response == "Success":
+                    self._fernet, self._temp_admin_fernet = self._temp_admin_fernet, None
+                    return True, ""
+                return False, response
+        except TSS2_Exception as e:
+            logging.error("[CLIENT_BL] Exception on authenticate, confirm that the user has the permission to interact with the tpm. Error: {}".format(e))
+            return False, "TSS Exception"
 
 
     def establish_secure_connection(self) -> bool:
