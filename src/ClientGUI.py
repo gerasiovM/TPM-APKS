@@ -1,8 +1,9 @@
 import sys
 from ClientBL import ClientBL
 from PyQt6.QtGui import QRegularExpressionValidator
-from PyQt6.QtWidgets import QApplication, QMainWindow, QWidget
-from PyQt6.QtCore import QRegularExpression, QTimer
+from PyQt6.QtWidgets import QApplication, QMainWindow, QWidget, QTableView
+from PyQt6.QtCore import QRegularExpression, QTimer, pyqtSignal, QObject
+from PyQt6.QtSql import QSqlDatabase, QSqlTableModel
 from PyQt6.uic import loadUi
 
 from src.Protocol import Protocol
@@ -20,6 +21,9 @@ class ClientGUI(QMainWindow, ClientBL):
         self.plainTextEdit_incoming.setReadOnly(True)
         self.timer = QTimer(self)
         self.timer.setInterval(100)
+
+        self.admin_wnd: AdminGUI = None
+        self.login_wnd: LoginGUI = None
         # self.timer.timeout.connect(self.update_incoming)
         # self.timer.start()
 
@@ -52,10 +56,23 @@ class ClientGUI(QMainWindow, ClientBL):
 
     def login_pressed(self):
         self.login_wnd = LoginGUI([self.login, self.login_admin, self.receive])
+        self.login_wnd.login_signal.connect(self.update_login_status)
         self.login_wnd.show()
-        self._logged_in = self.login_wnd.logged_in
 
+    def update_login_status(self, login_type):
+        self._logged_in = login_type
+        if self._logged_in == "Admin":
+            self.admin_wnd = AdminGUI(self.retrieve_database)
+            self.admin_wnd.show()
 
+    def closeEvent(self, event):
+        if self.login_wnd is not None:
+            self.login_wnd.close()
+
+        if self.admin_wnd is not None:
+            self.admin_wnd.close()
+
+        event.accept()
 
     def send_key_pressed(self):
         if not self._logged_in == "User":
@@ -87,6 +104,8 @@ class ClientGUI(QMainWindow, ClientBL):
 
 
 class LoginGUI(QWidget):
+    login_signal = pyqtSignal(str)
+
     def __init__(self, callbacks):
         super(LoginGUI, self).__init__()
         loadUi('../resources/ui/login.ui', self)
@@ -98,6 +117,7 @@ class LoginGUI(QWidget):
 
         self.pushButton_login_user.clicked.connect(self.login_user_pressed)
         self.pushButton_login_admin.clicked.connect(self.login_admin_pressed)
+
 
     def login_user_pressed(self):
         login = self.lineEdit_login.text()
@@ -113,22 +133,61 @@ class LoginGUI(QWidget):
         success, response = self.login(login, password)
         if success:
             self.logged_in = "User"
+            self.login_signal.emit(self.logged_in)
             self.close()
         else:
             self.label_login_info.setText(response)
 
     def login_admin_pressed(self):
         login = self.lineEdit_login.text()
-        if not login():
+        if not login:
             self.label_login_info.setText("Login field must be filled")
             return
         self.label_login_info.setText("")
-        success, response = self.login_admin()
+        success, response = self.login_admin(login)
         if success:
             self.logged_in = "Admin"
+            self.login_signal.emit(self.logged_in)
             self.close()
         else:
             self.label_login_info.setText(response)
+
+
+class AdminGUI(QWidget):
+    def __init__(self, retrieve_database):
+        super(AdminGUI, self).__init__()
+        loadUi('../resources/ui/admin.ui', self)
+        self.tableView: QTableView = self.tableView
+        self.retrieve_database = retrieve_database
+        self.retrieve_database()
+        self.setup_database()
+        self.setup_model()
+
+        self.pushButton_update_db.clicked.connect(self.reload_database)
+        self.pushButton_add_user.clicked.connect(self.add_user)
+
+    def reload_database(self):
+        self.retrieve_database()
+        self.model.select()
+
+    def add_user(self):
+        pass
+
+    def setup_database(self):
+        self.db = QSqlDatabase.addDatabase('QSQLITE')
+        self.db.setDatabaseName("users.db")
+        if not self.db.open():
+            print("Failed to connect to the database")
+            sys.exit(1)
+
+    def setup_model(self):
+        self.model = QSqlTableModel()
+        self.model.setTable("users")
+        self.model.select()
+
+        self.tableView.setModel(self.model)
+        self.tableView.resizeColumnsToContents()
+
 
 
 def main():

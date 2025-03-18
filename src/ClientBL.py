@@ -43,7 +43,7 @@ class ClientBL:
             logging.debug(f"[CLIENT_BL] {self._socket.getsockname()} connected")
             return True
         except Exception as e:
-            logging.error("[CLIENT_BL] Exception on connect: {}".format(e))
+            logging.exception("[CLIENT_BL] Exception on connect: {}".format(e))
             return False
 
     def disconnect(self):
@@ -68,7 +68,7 @@ class ClientBL:
             self._p.send_bytes(self._socket, data_type, data_hmac, encrypted_data)
             return True
         except Exception as e:
-            logging.error("[CLIENT_BL] Exception on send: {}".format(e))
+            logging.exception("[CLIENT_BL] Exception on send: {}".format(e))
             return False
 
     def send_no_enc(self, data: bytes or str, data_type: str) -> bool:
@@ -76,9 +76,9 @@ class ClientBL:
             data = data.encode(Protocol.FORMAT)
         return self._p.send_bytes(self._socket, data_type, b"", data)
 
-    def receive(self) -> bytes:
+    def receive(self) -> [bytes, bytes]: # [data_type, data]
         if not self._socket:
-            return b""
+            return None, b""
         try:
             valid_data, data_type, data_hmac, data = self._p.receive(self._socket)
             if valid_data:
@@ -90,7 +90,7 @@ class ClientBL:
                     hmac_manager_local.verify(data_hmac)
 
                     data = self._fernet.decrypt(data)
-                    return data
+                    return data_type, data
                 except cryptography.exceptions.InvalidSignature as e:
                     logging.warning("[CLIENT_BL] Received invalid HMAC, discarding")
                 except fernet.InvalidToken as e:
@@ -98,8 +98,8 @@ class ClientBL:
             else:
                 pass
         except Exception as e:
-            logging.error("[CLIENT_BL] Exception on receive: {}".format(e))
-        return b""
+            logging.exception("[CLIENT_BL] Exception on receive: {}".format(e))
+        return None, b""
 
     @staticmethod
     def create_storage_primary_key(ectx):
@@ -155,9 +155,9 @@ class ClientBL:
                 session = self.setup_session(ectx, ek_handle)
                 ak_handle = ectx.load(ek_handle, ak_priv, ak_pub, session1=session)
                 self.send(ek_pub.marshal() + Protocol.DELIMITER + ak_pub.marshal() + Protocol.DELIMITER + ek_cert, "AUTH")
-                response = self.receive()
+                data_type, response = self.receive()
                 while not response:
-                    response = self.receive()
+                    data_type, response = self.receive()
                 credblob, secret = response.split(Protocol.DELIMITER)
                 print(credblob)
                 print(secret)
@@ -185,26 +185,24 @@ class ClientBL:
                 cred_fernet = fernet.Fernet(base64.urlsafe_b64encode(certinfo))
                 self.send(cred_fernet.encrypt(key_pub.marshal()) + self._p.DELIMITER + signature.marshal(), "KEY2")
         except TSS2_Exception as e:
-            logging.error("[CLIENT_BL] Exception on authenticate, confirm that the user has the permission to interact with the tpm. Error: {}".format(e))
+            logging.exception("[CLIENT_BL] Exception on authenticate, confirm that the user has the permission to interact with the tpm. Error: {}".format(e))
         # except Exception as e:
         #     logging.error("[CLIENT_BL] Unknown exception on authenticate: {}".format(e))
-
-
 
     def login(self, login: str, password: str) -> [bool, str]:
         login = Protocol.standardize(login[:20].encode(Protocol.FORMAT), Protocol.LOGIN_SIZE)
         self.send(login + password.encode(Protocol.FORMAT), "LGN")
-        login_response = self.receive().decode(Protocol.FORMAT)
+        response_type, login_response = self.receive()
         it = 0
-        while login_response == "" and it != 100:
-            login_response = self.receive().decode(Protocol.FORMAT)
+        while response_type is None and it != 100:
+            response_type, login_response = self.receive()
             it += 1
-        if login_response == "Success":
+        if login_response.decode(Protocol.FORMAT) == "Success":
             return True, ""
-        elif login_response == "":
+        elif response_type is None:
             return False, "Could not get a response from server"
         else:
-            return False, login_response
+            return False, login_response.decode(Protocol.FORMAT)
 
     def login_admin(self, login: str) -> [bool, str]:
         try:
@@ -212,26 +210,39 @@ class ClientBL:
                 km = KeyManager(ectx)
                 persistent_handle = km.get_key_persistent("storage_key")
                 if not persistent_handle:
-                    logging.error("No storage key found, can't admin login")
+                    logging.warning("No storage key found, can't admin login")
                     return False, "No key found on computer, can't login"
                 storage_key_handle = ectx.tr_from_tpmpublic(TPM2_HANDLE(persistent_handle))
                 self.send(login, "LGNA")
-                enc_secret = self.receive()
+                response_type, response = self.receive()
+                if response_type == "MSG":
+                    logging.warning("Failed admin login, response: {}".format(response))
+                    return False, response.decode(Protocol.FORMAT)
                 scheme = TPMT_RSA_DECRYPT(
                     scheme=TPM2_ALG.OAEP,
                     details=TPMU_ASYM_SCHEME(oaep=TPMS_SCHEME_HASH(hashAlg=TPM2_ALG.SHA256))
                 )
-                fernet_key = ectx.rsa_decrypt(storage_key_handle, enc_secret, scheme).marshal()
+                fernet_key = ectx.rsa_decrypt(storage_key_handle, response, scheme).marshal()
                 self._temp_admin_fernet = fernet.Fernet(fernet_key)
                 self.send(self._temp_admin_fernet.encrypt(b"Answer"), "LGNB")
-                response = self.receive().decode(Protocol.FORMAT)
-                if response == "Success":
-                    self._fernet, self._temp_admin_fernet = self._temp_admin_fernet, None
-                    return True, ""
-                return False, response
+                self._fernet, self._temp_admin_fernet = self._temp_admin_fernet, self._fernet
+                response_type, response = self.receive()
+                if response_type is not None:
+                    return True, "Success"
+                else:
+                    self._fernet, self._temp_admin_fernet = self._temp_admin_fernet, self._fernet
+                    return False, response.decode(Protocol.FORMAT)
         except TSS2_Exception as e:
-            logging.error("[CLIENT_BL] Exception on authenticate, confirm that the user has the permission to interact with the tpm. Error: {}".format(e))
+            logging.exception("[CLIENT_BL] Exception on authenticate, confirm that the user has the permission to interact with the tpm. Error: {}".format(e))
             return False, "TSS Exception"
+
+    def retrieve_database(self) -> [bool, str|bytes]:
+        if self._logged_in != "Admin":
+            return [False, "Must be logged in as Admin"]
+        self.send("Request", "DB")
+        response_type, db_response = self.receive()
+        with open("../resources/db/users.db", "wb") as f:
+            f.write(db_response)
 
 
     def establish_secure_connection(self) -> bool:
@@ -251,7 +262,7 @@ class ClientBL:
             self._fernet = fernet.Fernet(fernet_key)
             return True
         except Exception as e:
-            logging.error("[CLIENT_BL] Exception when attempting key exchange: {}".format(e))
+            logging.exception("[CLIENT_BL] Exception when attempting key exchange: {}".format(e))
             return False
 
 
