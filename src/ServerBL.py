@@ -63,10 +63,9 @@ class ServerBL:
 
     def check_user_has_key(self, login):
         cursor = self._con.cursor()
-        result = cursor.execute('''SELECT public_key FROM users WHERE login = ?''', (login,)).fetchone()[0]
+        result = cursor.execute('''SELECT public_key FROM users WHERE login = ?''', (login,)).fetchone()
         cursor.close()
         return bool(result)
-
 
     def get_user_salt(self, login):
         cursor = self._con.cursor()
@@ -232,17 +231,21 @@ class ClientHandler(threading.Thread):
             if data_type == "LGN":
                 response = self.handle_login_user(data)
             if data_type == "LGNA" or data_type == "LGNB":
-                response = self.handle_login_admin(data, data_type)
+                response, response_data_type = self.handle_login_admin(data, data_type)
             if data_type == "AUTH":
                 response, response_data_type = self.handle_enrollment(data)
             if data_type == "KEY2":
                 response = self.handle_key_submission(data)
+            if data_type == "DB":
+                response, response_data_type = self.handle_db_request(data)
         except cryptography.exceptions.InvalidSignature:
             logging.warning("[SERVER_BL] Received invalid HMAC, discarding data")
             response = "Wrong HMAC, make sure you are using the correct hashing algorithm"
         except cryptography.fernet.InvalidToken:
             logging.warning("[SERVER_BL] Received data could not be decrypted, discarding")
             response = "Data could not be decrypted, make sure you are using the correct key"
+        except Exception as e:
+            logging.exception("[SERVER_BL] Exception on processing authenticated data : {}".format(e))
         return response, response_data_type
 
     def handle_login_user(self, data):
@@ -273,13 +276,17 @@ class ClientHandler(threading.Thread):
             response = "Already logged in"
         else:
             if data_type == "LGNA":
-                pem_key = self._get_user_key()
-                key = serialization.load_pem_public_key(pem_key)
-                new_fernet_key = Fernet.generate_key()
-                self._admin_check_fernet = Fernet(new_fernet_key)
-                encrypted_secret = key.encrypt(new_fernet_key, padding=Protocol.PADDING)
-                response = encrypted_secret
-                response_data_type = "LGNA"
+                login = data.decode(Protocol.FORMAT)
+                if self._check_user_has_key(login):
+                    pem_key = self._get_user_key(data.decode(Protocol.FORMAT))
+                    key = serialization.load_pem_public_key(pem_key)
+                    new_fernet_key = Fernet.generate_key()
+                    self._admin_check_fernet = Fernet(new_fernet_key)
+                    encrypted_secret = key.encrypt(new_fernet_key, padding=Protocol.PADDING)
+                    response = encrypted_secret
+                    response_data_type = "LGNA"
+                else:
+                    response = "User doesn't have a registered key"
             elif data_type == "LGNB":
                 if self._admin_check_fernet:
                     try:
@@ -333,6 +340,16 @@ class ClientHandler(threading.Thread):
             response = "User not logged in, can't accept key"
         return response
 
+    def handle_db_request(self, data):
+        response_data_type = "MSG"
+        if self._mode == "LOGGED_IN_ADMIN":
+            with open("users.db", "rb") as f:
+                response = f.read()
+                response_data_type = "DB"
+        else:
+            response = "Must be logged in as admin"
+        return response, response_data_type
+
     def send_response(self, response, response_data_type):
         if self._mode == "KEY":
             if type(response) is str:
@@ -343,6 +360,7 @@ class ClientHandler(threading.Thread):
         else:
             if type(response) is str:
                 response = response.encode(Protocol.FORMAT)
+            print(response, response_data_type)
             response = self._fernet.encrypt(response)
             hmac_manager_local = self._hmac_manager.copy()
             hmac_manager_local.update(response)
@@ -360,7 +378,7 @@ class ClientHandler(threading.Thread):
 
 
 def main():
-    server = ServerBL("127.0.0.1", 8081)
+    server = ServerBL("127.0.0.1", 8080)
     server.start_server()
 
 
