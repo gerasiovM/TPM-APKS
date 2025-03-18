@@ -72,11 +72,13 @@ class Protocol:
         except TimeoutError:
             return [False, "", b"", b""]
 
-    def decode(self, data: bytes) -> str:
-        return data.decode(self.FORMAT)
+    @classmethod
+    def decode(cls, data: bytes) -> str:
+        return data.decode(cls.FORMAT)
 
-    def standardize_str(self, data: str, size: int) -> bytes:
-        return self.standardize(data.encode(self.FORMAT), size)
+    @classmethod
+    def standardize_str(cls, data: str, size: int) -> bytes:
+        return cls.standardize(data.encode(cls.FORMAT), size)
 
     @staticmethod
     def standardize(data: bytes, size: int) -> bytes:
