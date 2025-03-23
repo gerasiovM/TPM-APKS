@@ -1,6 +1,7 @@
 import base64
 import socket
 import logging
+import subprocess
 from Protocol import Protocol
 from KeyManager import KeyManager
 from templates import parent_template, child_template
@@ -153,6 +154,13 @@ class ClientBL:
                 nv_read = NVReadEK(ectx)
                 ek_cert, ek_template = create_ek_template("EK-RSA2048", nv_read)
                 ek_handle, ek_pub, _, _, _ = ectx.create_primary(TPM2B_SENSITIVE_CREATE(), ek_template, ESYS_TR.RH_ENDORSEMENT)
+                if not ek_cert:
+                    with open("ek.pub", "wb") as f:
+                        f.write(ek_pub.marshal())
+                    command = ["tpm2_getekcertificate", "-o", "ek.cert", "-u", "ek.pub"]
+                    subprocess.run(command)
+                    with open("ek.cert", "rb") as f:
+                        ek_cert = f.read()
                 session = self.setup_session(ectx, ek_handle)
                 ak_priv, ak_pub, _, _, _ = ectx.create(ek_handle, in_sensitive=None, session1=session)
                 session = self.setup_session(ectx, ek_handle)
