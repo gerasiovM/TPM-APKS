@@ -39,6 +39,7 @@ class ClientBL:
         try:
             self._socket = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
             # Might have to use settimeout here
+            print(self._host, self._port)
             self._socket.connect((self._host,self._port))
             logging.debug(f"[CLIENT_BL] {self._socket.getsockname()} connected")
             return True
@@ -80,6 +81,8 @@ class ClientBL:
         if not self._socket:
             return None, b""
         try:
+            import select
+            ready, _, _ = select.select([self._socket], [], [], 2)
             valid_data, data_type, data_hmac, data = self._p.receive(self._socket)
             if valid_data:
                 logging.info(f"[CLIENT_BL] Received message from server - {data}")
