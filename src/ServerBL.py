@@ -6,6 +6,7 @@ import socket
 import threading
 import os
 import base64
+import subprocess
 import cryptography.exceptions
 from cryptography.hazmat.primitives import serialization, hmac, hashes
 from cryptography.hazmat.primitives.asymmetric import rsa, padding
@@ -64,6 +65,8 @@ class ServerBL:
     def check_user_has_key(self, login):
         cursor = self._con.cursor()
         result = cursor.execute('''SELECT public_key FROM users WHERE login = ?''', (login,)).fetchone()
+        if result:
+            result = result[0]
         cursor.close()
         return bool(result)
 
@@ -180,6 +183,9 @@ class ClientHandler(threading.Thread):
                     response, response_data_type = self.process_key_exchange(data, data_type)
                 else:
                     response, response_data_type = self.process_authenticated_data(data, data_type, data_hmac)
+            else:
+                response = "Invalid communication, closing connection"
+                self.stop()
             # else:
                 # logging.warning("[SERVER_BL] Received invalid data")
                 # response = "Data is invalid"
@@ -189,6 +195,7 @@ class ClientHandler(threading.Thread):
                 self.stop()
 
 
+        self._client_socket.shutdown(SHUT_RDWR)
         self._client_socket.close()
         logging.info(f"[SERVER_BL] Thread closed for : {self._address} ")
         self._client_handlers.remove(self)
@@ -307,7 +314,11 @@ class ClientHandler(threading.Thread):
             ek_pub_bytes, ak_pub_bytes, ek_cert = data.split(self._p.DELIMITER)
             ek_pub = TPM2B_PUBLIC.unmarshal(ek_pub_bytes)[0]
             self._ak_pub = TPM2B_PUBLIC.unmarshal(ak_pub_bytes)[0]
-            cm = CertificateManager(ek_cert)
+            print(ek_cert)
+            if "-----BEGIN CERTIFICATE-----".encode(Protocol.FORMAT) in ek_cert:
+                cm = CertificateManager(ek_cert, mode="PEM")
+            else:
+                cm = CertificateManager(ek_cert, mode="DER")
             if not cm.check_key(ek_pub.to_der()) or not cm.check_certificate():
                 response = "Invalid certificate"
             else:
@@ -324,18 +335,21 @@ class ClientHandler(threading.Thread):
         return response, response_data_type
 
     def handle_key_submission(self, data):
-        if self._mode == "LOGGED_IN_USER" and not self._check_user_has_key(self._login):
-            if self._ak_pub is not None:
-                key_pub_bytes, signature_bytes = data.split(self._p.DELIMITER)
-                key_pub_bytes_decrypted = self._cred_fernet.decrypt(key_pub_bytes)
-                signature = TPMT_SIGNATURE.unmarshal(signature_bytes)[0]
-                signature.verify_signature(self._ak_pub, key_pub_bytes_decrypted)
-                key_pub = TPM2B_PUBLIC.unmarshal(key_pub_bytes_decrypted)[0]
-                print("SAVING USER KEY")
-                self._save_user_key(self._login, key_pub.to_pem())
-                response = "Success"
+        if self._mode == "LOGGED_IN_USER":
+            if not self._check_user_has_key(self._login):
+                if self._ak_pub is not None:
+                    key_pub_bytes, signature_bytes = data.split(self._p.DELIMITER)
+                    key_pub_bytes_decrypted = self._cred_fernet.decrypt(key_pub_bytes)
+                    signature = TPMT_SIGNATURE.unmarshal(signature_bytes)[0]
+                    signature.verify_signature(self._ak_pub, key_pub_bytes_decrypted)
+                    key_pub = TPM2B_PUBLIC.unmarshal(key_pub_bytes_decrypted)[0]
+                    print("SAVING USER KEY")
+                    self._save_user_key(self._login, key_pub.to_pem())
+                    response = "Success"
+                else:
+                    response = "No associated ak with the connection"
             else:
-                response = "No associated ak with the connection"
+                response = "User already has a registered key"
         else:
             response = "User not logged in, can't accept key"
         return response
@@ -378,7 +392,7 @@ class ClientHandler(threading.Thread):
 
 
 def main():
-    server = ServerBL("127.0.0.1", 8080)
+    server = ServerBL("0.0.0.0", 8080)
     server.start_server()
 
 
