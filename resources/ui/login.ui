@@ -17,7 +17,7 @@
    </sizepolicy>
   </property>
   <property name="windowTitle">
-   <string>Form</string>
+   <string>TPM-APKS Login</string>
   </property>
   <widget class="QLineEdit" name="lineEdit_login">
    <property name="geometry">

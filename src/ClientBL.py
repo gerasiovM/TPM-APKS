@@ -149,43 +149,72 @@ class ClientBL:
         ectx.trsess_set_attributes(session, TPMA_SESSION.ENCRYPT | TPMA_SESSION.DECRYPT)
         return session
 
+    def register_ek_ak(self, ectx: ESAPI) -> [ESYS_TR, fernet.Fernet]:
+        # Creating a helper utility for reading NV storage with EK certificates/templates
+        nv_read = NVReadEK(ectx)
+        # Fetching certificate and template for an EK of type RSA with 2048 bits
+        ek_cert, ek_template = create_ek_template("EK-RSA2048", nv_read)
+        # Creating an EK key using the template
+        ek_handle, ek_pub, _, _, _ = ectx.create_primary(TPM2B_SENSITIVE_CREATE(), ek_template, ESYS_TR.RH_ENDORSEMENT)
+        # If Client has an fTPM ek_cert will be None, need to use tpm2-tools getekcertificate command instead
+        if not ek_cert:
+            # Creating a file with public bytes of EK
+            with open("ek.pub", "wb") as f:
+                f.write(ek_pub.marshal())
+            # Executing the command to get EK certificate
+            command = ["tpm2_getekcertificate", "-o", "ek.cert", "-u", "ek.pub"]
+            subprocess.run(command)
+            # Reading the generated EK certificate
+            with open("ek.cert", "rb") as f:
+                ek_cert = f.read()
+        # Every time we want to do anything connected to the AK, we need to provide authentication using sessions
+        # Session keeps record of every time it's used, so it can't be used multiple times and needs to be recreated
+        session = self.setup_session(ectx, ek_handle)
+        # Creating an AK with EK as its parent
+        ak_priv, ak_pub, _, _, _ = ectx.create(ek_handle, in_sensitive=None, session1=session)
+        session = self.setup_session(ectx, ek_handle)
+        # Loading AK into TPM memory
+        ak_handle = ectx.load(ek_handle, ak_priv, ak_pub, session1=session)
+
+        # Sending to the Server all information that it needs to check our keys and encrypt a secret
+        self.send(ek_pub.marshal() + Protocol.DELIMITER + ak_pub.marshal() + Protocol.DELIMITER + ek_cert, "AUTH")
+        data_type, response = self.receive()
+        # Server needs to perform several http request which takes time, so we need to try and receive several times
+        it = 0
+        while not response and it < 20:
+            data_type, response = self.receive()
+            it += 1
+
+        credblob, secret = response.split(Protocol.DELIMITER)
+        session = self.setup_session(ectx, ek_handle)
+        # Decrypting the secret
+        certinfo = ectx.activate_credential(ak_handle, ek_handle, TPM2B_ID_OBJECT.unmarshal(credblob)[0],
+                                            TPM2B_ENCRYPTED_SECRET.unmarshal(secret)[0], session2=session).marshal()[2:]
+        # Making a fernet for encrypting a response
+        cred_fernet = fernet.Fernet(base64.urlsafe_b64encode(certinfo))
+        return ak_handle, cred_fernet
+
+    #
     def authenticate(self) -> [bool, bytes]:
         try:
+            # Opening a connection with the TPM through tabrmd
             with ESAPI(tcti="tabrmd") as ectx:
-                nv_read = NVReadEK(ectx)
-                ek_cert, ek_template = create_ek_template("EK-RSA2048", nv_read)
-                ek_handle, ek_pub, _, _, _ = ectx.create_primary(TPM2B_SENSITIVE_CREATE(), ek_template, ESYS_TR.RH_ENDORSEMENT)
-                if not ek_cert:
-                    with open("ek.pub", "wb") as f:
-                        f.write(ek_pub.marshal())
-                    command = ["tpm2_getekcertificate", "-o", "ek.cert", "-u", "ek.pub"]
-                    subprocess.run(command)
-                    with open("ek.cert", "rb") as f:
-                        ek_cert = f.read()
-                session = self.setup_session(ectx, ek_handle)
-                ak_priv, ak_pub, _, _, _ = ectx.create(ek_handle, in_sensitive=None, session1=session)
-                session = self.setup_session(ectx, ek_handle)
-                ak_handle = ectx.load(ek_handle, ak_priv, ak_pub, session1=session)
-                self.send(ek_pub.marshal() + Protocol.DELIMITER + ak_pub.marshal() + Protocol.DELIMITER + ek_cert, "AUTH")
-                data_type, response = self.receive()
-                while not response:
-                    data_type, response = self.receive()
-                credblob, secret = response.split(Protocol.DELIMITER)
-                print(credblob)
-                print(secret)
-                session = self.setup_session(ectx, ek_handle)
-                certinfo = ectx.activate_credential(ak_handle, ek_handle, TPM2B_ID_OBJECT.unmarshal(credblob)[0], TPM2B_ENCRYPTED_SECRET.unmarshal(secret)[0], session2=session).marshal()[2:]
-                print("Certinfo: " + str(certinfo))
+                ak_handle, cred_fernet = self.register_ek_ak(ectx)
+                # Creating an instance of KeyManager that helps with key storage
                 km = KeyManager(ectx)
+                # Getting the persistent handle of the storage primary key
                 handle = km.get_key_persistent("storage_primary_key")
                 if handle is None:
                     handle = self.create_storage_primary_key(ectx)
                 parent_handle = ectx.tr_from_tpmpublic(TPM2_HANDLE(handle))
+                # Getting the persistent handle of the storage key to be used in asymmetric encryption
                 handle = km.get_key_persistent("storage_key")
                 if handle is None:
                     handle = self.create_storage_key(ectx, parent_handle)
                 key_handle = ectx.tr_from_tpmpublic(TPM2_HANDLE(handle))
+                # Getting the public part of the key to send to server
                 key_pub = ectx.read_public(key_handle)[0]
+                # Signing the key using AK so the Server knows it resides on the TPM
                 validation = TPMT_TK_HASHCHECK(tag=TPM2_ST.HASHCHECK, hierarchy=TPM2_RH.OWNER)
                 digest, ticket = ectx.hash(key_pub.marshal(), hash_alg=TPM2_ALG.SHA256, hierarchy=ESYS_TR.OWNER)
                 scheme = TPMT_SIG_SCHEME(scheme=TPM2_ALG.RSASSA)
@@ -194,7 +223,6 @@ class ClientBL:
                                       digest=digest,
                                       in_scheme=scheme,
                                       validation=validation)
-                cred_fernet = fernet.Fernet(base64.urlsafe_b64encode(certinfo))
                 self.send(cred_fernet.encrypt(key_pub.marshal()) + self._p.DELIMITER + signature.marshal(), "KEY2")
                 response_type, response = self.receive()
                 if response != "Success":

@@ -195,24 +195,28 @@ class ClientHandler(threading.Thread):
                 self.stop()
 
 
-        self._client_socket.shutdown(SHUT_RDWR)
+        self._client_socket.shutdown(socket.SHUT_RDWR)
         self._client_socket.close()
         logging.info(f"[SERVER_BL] Thread closed for : {self._address} ")
         self._client_handlers.remove(self)
 
+    # Called when Client hasn't established a symmetric encryption
     def process_key_exchange(self, data, data_type):
         response, response_data_type = "", "MSG"
+        # The client can only send their public key when there is no symmetric encryption
         if data_type == "KEY":
             try:
-                print(data)
+                # Loading bytes into a usable format
                 pub_key = serialization.load_pem_public_key(data)
+                # Generating a secret to be used for HMAC generation
                 secret = os.urandom(128)
+                # Generating a key for symmetric encryption
                 fernet_key = Fernet.generate_key()
+                # Creating an hmac_manager with the agreed upon hash algorithm (SHA256)
                 self._hmac_manager = hmac.HMAC(key=secret, algorithm=self._p.HASH_ALG)
                 self._fernet = Fernet(fernet_key)
-                print("FERNEEEEEEET")
+                # Encrypting the response using client's private key and agreed upon padding
                 response = pub_key.encrypt(plaintext=(secret + fernet_key), padding=self._p.PADDING)
-                print(response)
                 response_data_type = "KEY"
             except Exception as e:
                 logging.error("[SERVER_BL] Exception on loading public key : {}".format(e))
@@ -226,14 +230,12 @@ class ClientHandler(threading.Thread):
         response, response_data_type = "", "MSG"
         try:
             # HMAC verification
-            print(data_type, data_hmac, data)
             hmac_manager_local = self._hmac_manager.copy()
             hmac_manager_local.update(data)
             hmac_manager_local.verify(data_hmac)
 
             # Decrypting
             data = self._fernet.decrypt(data)
-            print(data)
             response = f"Data received! - {data}"
             if data_type == "LGN":
                 response = self.handle_login_user(data)
@@ -277,27 +279,39 @@ class ClientHandler(threading.Thread):
                     response = "Login and password don't match"
         return response
 
+    # Called when Client sends an admin login request
     def handle_login_admin(self, data, data_type):
-        response, response_data_type = "Something went wrong", "MSG"
-        if self._mode != "NOT_LOGGED_IN":
+        response, response_data_type = "", "MSG"
+        # Abort if the Client is already logged in as admin
+        if self._mode != "NOT_LOGGED_IN" and self._mode != "LOGGED_IN_USER":
             response = "Already logged in"
         else:
+            # LGNA is the first part of admin login, Client sends their login
             if data_type == "LGNA":
                 login = data.decode(Protocol.FORMAT)
+                # Aboirt if the user doesn't have a registered key in DB
                 if self._check_user_has_key(login):
-                    pem_key = self._get_user_key(data.decode(Protocol.FORMAT))
+                    # Getting the Client's key from DB
+                    pem_key = self._get_user_key(login)
                     key = serialization.load_pem_public_key(pem_key)
+                    # Generating a new key to be used for admin encrypting
                     new_fernet_key = Fernet.generate_key()
                     self._admin_check_fernet = Fernet(new_fernet_key)
+                    # Encrypting the Fernet key using the key from DB to check if client has the private part
                     encrypted_secret = key.encrypt(new_fernet_key, padding=Protocol.PADDING)
                     response = encrypted_secret
                     response_data_type = "LGNA"
                 else:
                     response = "User doesn't have a registered key"
+            # LGNB is the second part of admin login, Client sends the message encrypted using the provided secret
             elif data_type == "LGNB":
+                # If there is no admin_check_fernet that means CLient didn't send LGNA
                 if self._admin_check_fernet:
                     try:
+                        # Being able to decrypt what the Client sent using fernet is confirmation that they encrypted it
+                        # Meaning they own the private part of the key
                         confirmation = self._admin_check_fernet.decrypt(data)
+                        # Changin admin_check_fernet to be used as main encryption
                         self._fernet, self._admin_check_fernet = self._admin_check_fernet, None
                         self._mode = "LOGGED_IN_ADMIN"
                         response = "Success"

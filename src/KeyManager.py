@@ -4,27 +4,26 @@ class KeyManager:
     def __init__(self, ectx):
         self.ectx = ectx
 
-    def get_key_persistent(self, key_type) -> int:
+    # Returns the handle for a persistent key if there is one
+    def get_key_persistent(self, key_type) -> int | None: # key_type is either storage_primary_key or storage_key
         import json
         try:
             with open("../resources/handles/persistent-handles.json", "r") as f:
                 handles = json.load(f)
                 if key_type not in handles:
-                    print("a")
-                    print(handles)
                     return None
                 handle = handles[key_type]
+                # Querying the TPM for existing persistent handles, to check if it still exists on the computer
                 _, cap_data = self.ectx.get_capability(TPM2_CAP.HANDLES, handle)
                 if handle in cap_data.data.handles:
                     return handle
                 else:
-                    print("b")
                     return None
+        # If there is no file we can't know if there are keys on the computer
         except FileNotFoundError:
-            print("c")
             return None
 
-    def find_available_persistent_handle(self, key_type):
+    def find_available_persistent_handle(self, key_type) -> int | None:
         ranges = {"storage_primary_key": 0x81000000, "storage_key": range(0x81008000, 0x8100ffff, 255)}
         if key_type == "storage_primary_key":
             return ranges[key_type]

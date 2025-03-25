@@ -47,28 +47,26 @@ class Protocol:
     def receive_large(self, s: socket.socket, data_size: int) -> bytes:
         data = b''
         while len(data) < data_size:
-            print("Why do gooood girls like baaad guys")
             received = s.recv(self.BUFFER_SIZE)
             data += received
-        print("I've wondered this for a very long tiiiiime")
         return data
 
-    # returns [valid_msg, data_type, data_hmac, data]
-    def receive(self, s: socket.socket) -> [bool, str, bytes, bytes]:
+    # Uses a socket to receive packets
+    def receive(self, s: socket.socket) -> [bool, str, bytes, bytes]: # [valid_msg, data_type, data_hmac, data]
         try:
+            # Receives data_type, data_size and data_hmac that must come with every message
             data_type = s.recv(self.HEADER_DATA_TYPE_SIZE).lstrip(b'\x00').decode(self.FORMAT)
             data_size = s.recv(self.HEADER_DATA_SIZE).lstrip(b'\x00').decode(self.FORMAT)
-            # Probably don't need to lstrip, but check on this later if errors
             data_hmac = s.recv(self.HEADER_HMAC_SIZE)
-            print(data_type, data_size, data_hmac)
+
+            # Checks if the decoded data_size strings consists of numbers
             if not data_size.isnumeric():
                 logging.error("Received data size is invalid, aborting")
                 return [False, data_type, data_hmac, '']
-            print(data_type)
-            print(data_size)
+            # If the length of the message is bigger than maximum buffer size, then use receive_large
             if int(data_size) > self.BUFFER_SIZE:
-                print("Receive large my ass, this shit sucks")
                 data = self.receive_large(s, int(data_size))
+            # Else receive normally
             else:
                 data = s.recv(int(data_size))
             if not data:
@@ -76,7 +74,7 @@ class Protocol:
             return [True, data_type, data_hmac, data]
         # For sockets that use timeout
         except TimeoutError:
-            return [False, "", b"", b""]
+            return [False, "Timeout", b"", b""]
 
     @classmethod
     def decode(cls, data: bytes) -> str:

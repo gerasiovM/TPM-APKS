@@ -6,49 +6,6 @@ from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec, padding
 
-    @staticmethod
-    def parse_length(data, idx):
-        length = data[idx]
-        if length & 0x80:  # Long form
-            num_bytes = length & 0x7F
-            length = int.from_bytes(data[idx + 1: idx + 1 + num_bytes], 'big')
-            idx += num_bytes
-        return length, idx + 1
-
-    @staticmethod
-    def extract_tbs_and_signature(cert):
-        cert_bytes = crypto.dump_certificate(crypto.FILETYPE_ASN1, cert)
-        idx = 0
-
-        # Check for SEQUENCE (0x30)
-        if cert_bytes[idx] != 0x30:
-            raise ValueError("Invalid certificate format")
-        idx += 1
-
-        # Parse the total length of the certificate
-        cert_len, idx = CertificateManager.parse_length(cert_bytes, idx)
-
-        # Extract the tbsCertificate (first element of the SEQUENCE)
-        if cert_bytes[idx] != 0x30:  # tbsCertificate should start with SEQUENCE (0x30)
-            raise ValueError("Invalid tbsCertificate format")
-        tbs_start = idx
-        tbs_len, idx = CertificateManager.parse_length(cert_bytes, idx + 1)
-        tbs_end = idx + tbs_len
-        tbs_certificate = cert_bytes[tbs_start:tbs_end]
-
-        # Skip to the signature value (last element, BIT STRING)
-        idx = tbs_end
-        if cert_bytes[idx] != 0x30:  # Signature algorithm identifier, a SEQUENCE (0x30)
-            raise ValueError("Invalid signature algorithm format")
-        algo_len, idx = CertificateManager.parse_length(cert_bytes, idx + 1)
-        idx += algo_len
-
-        if cert_bytes[idx] != 0x03:  # BIT STRING tag (0x03)
-            raise ValueError("Invalid signature format")
-        sig_len, idx = CertificateManager.parse_length(cert_bytes, idx + 1)
-        signature = cert_bytes[idx + 1:idx + sig_len]
-
-        return tbs_certificate, signature
 class CertificateManager:
     TRUSTED_CERTIFICATES_PATH = "../resources/certs/ca-certificates.crt"
     def __init__(self, certificate, mode="DER"):
@@ -100,26 +57,49 @@ class CertificateManager:
         return any(cert_der == crypto.dump_certificate(crypto.FILETYPE_ASN1, ca_cert) for ca_cert in valid_cert_list)
 
     @staticmethod
-    def a(b: bytes):
-        bytes_result = bytes([int(b[i:i + 2],
-                                  16) for i in range(0, len(b), 2)])
-        print(b"Signature: " + bytes_result)
-        return bytes_result
+    def parse_length(data, idx) -> [int, int]:
+        length = data[idx]
+        if length & 0x80:  # Long form
+            num_bytes = length & 0x7F
+            length = int.from_bytes(data[idx + 1: idx + 1 + num_bytes], 'big')
+            idx += num_bytes
+        return length, idx + 1
 
+    # Dumps certificate into ASN1(DER) format and parses out TBS (To Be Signed) and Signature parts of it
     @staticmethod
-    def extract_certificate_signature(certificate) -> bytes:
-        text_certificate = crypto.dump_certificate(crypto.FILETYPE_TEXT, certificate)
-        # signature_index = re.search(b"\x03.{3}\x00", der_certificate).end()
-        # signature = der_certificate[signature_index:]
-        signature = bytes.fromhex(b"".join([x.strip() for x in text_certificate.split(b"Signature Value:")[-1].strip().split(b"\n")]).decode().replace(":", ""))
-        return signature
+    def extract_tbs_and_signature(cert):
+        cert_bytes = crypto.dump_certificate(crypto.FILETYPE_ASN1, cert)
+        idx = 0
 
-    @staticmethod
-    def extract_tbs_certificate(certificate) -> bytes:
-        der_certificate = crypto.dump_certificate(crypto.FILETYPE_ASN1, certificate)
-        signature_algorithm_index = der_certificate.rfind(b'0\x0d')
-        tbs_certificate = der_certificate[:signature_algorithm_index]
-        return tbs_certificate
+        # Check for SEQUENCE (0x30)
+        if cert_bytes[idx] != 0x30:
+            raise ValueError("Invalid certificate format")
+        idx += 1
+
+        # Parse the total length of the certificate
+        cert_len, idx = CertificateManager.parse_length(cert_bytes, idx)
+
+        # Extract the tbsCertificate (first element of the SEQUENCE)
+        if cert_bytes[idx] != 0x30:  # tbsCertificate should start with SEQUENCE (0x30)
+            raise ValueError("Invalid tbsCertificate format")
+        tbs_start = idx
+        tbs_len, idx = CertificateManager.parse_length(cert_bytes, idx + 1)
+        tbs_end = idx + tbs_len
+        tbs_certificate = cert_bytes[tbs_start:tbs_end]
+
+        # Skip to the signature value (last element, BIT STRING)
+        idx = tbs_end
+        if cert_bytes[idx] != 0x30:  # Signature algorithm identifier, a SEQUENCE (0x30)
+            raise ValueError("Invalid signature algorithm format")
+        algo_len, idx = CertificateManager.parse_length(cert_bytes, idx + 1)
+        idx += algo_len
+
+        if cert_bytes[idx] != 0x03:  # BIT STRING tag (0x03)
+            raise ValueError("Invalid signature format")
+        sig_len, idx = CertificateManager.parse_length(cert_bytes, idx + 1)
+        signature = cert_bytes[idx + 1:idx + sig_len]
+
+        return tbs_certificate, signature
 
     @staticmethod
     def parse_signature_hash_algorithm(certificate) -> hashes.HashAlgorithm | None:
@@ -153,8 +133,6 @@ class CertificateManager:
                 return False
             try:
                 tbs, sig = self.extract_tbs_and_signature(cert)
-                print(sig)
-                print(tbs)
                 if self.parse_signature_algorithm(cert) == "rsa":
                     issuer_certificate.get_pubkey().to_cryptography_key().verify(
                         sig,
