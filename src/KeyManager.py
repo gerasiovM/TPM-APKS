@@ -1,4 +1,5 @@
 from tpm2_pytss import ESAPI, TPM2_CAP
+import os
 class KeyManager:
     def __init__(self, ectx):
         self.ectx = ectx
@@ -44,5 +45,6 @@ class KeyManager:
                 handle_data[name] = handle
         except FileNotFoundError:
             handle_data = {name: handle}
+            os.mkdir("../resources/handles")
         with open("../resources/handles/persistent-handles.json", "w") as f:
             json.dump(handle_data, f)

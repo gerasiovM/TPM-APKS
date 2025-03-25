@@ -71,8 +71,6 @@ class CertificateManager:
         tbs_certificate = der_certificate[:signature_algorithm_index]
         return tbs_certificate
 
-
-
     @staticmethod
     def parse_signature_hash_algorithm(certificate) -> hashes.HashAlgorithm | None:
         signature_algorithm_bytes = certificate.get_signature_algorithm()

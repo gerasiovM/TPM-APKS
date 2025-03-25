@@ -47,8 +47,10 @@ class Protocol:
     def receive_large(self, s: socket.socket, data_size: int) -> bytes:
         data = b''
         while len(data) < data_size:
+            print("Why do gooood girls like baaad guys")
             received = s.recv(self.BUFFER_SIZE)
             data += received
+        print("I've wondered this for a very long tiiiiime")
         return data
 
     # returns [valid_msg, data_type, data_hmac, data]
@@ -58,15 +60,19 @@ class Protocol:
             data_size = s.recv(self.HEADER_DATA_SIZE).lstrip(b'\x00').decode(self.FORMAT)
             # Probably don't need to lstrip, but check on this later if errors
             data_hmac = s.recv(self.HEADER_HMAC_SIZE)
+            print(data_type, data_size, data_hmac)
             if not data_size.isnumeric():
                 logging.error("Received data size is invalid, aborting")
                 return [False, data_type, data_hmac, '']
             print(data_type)
             print(data_size)
             if int(data_size) > self.BUFFER_SIZE:
+                print("Receive large my ass, this shit sucks")
                 data = self.receive_large(s, int(data_size))
             else:
                 data = s.recv(int(data_size))
+            if not data:
+                return [False, data_type, data_hmac, b""]
             return [True, data_type, data_hmac, data]
         # For sockets that use timeout
         except TimeoutError:

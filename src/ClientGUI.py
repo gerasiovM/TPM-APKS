@@ -175,7 +175,7 @@ class AdminGUI(QWidget):
 
     def setup_database(self):
         self.db = QSqlDatabase.addDatabase('QSQLITE')
-        self.db.setDatabaseName("users.db")
+        self.db.setDatabaseName("../resources/db/users.db")
         if not self.db.open():
             print("Failed to connect to the database")
             sys.exit(1)

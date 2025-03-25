@@ -2,6 +2,7 @@ import base64
 import socket
 import logging
 import subprocess
+import os
 from Protocol import Protocol
 from KeyManager import KeyManager
 from templates import parent_template, child_template
@@ -148,7 +149,7 @@ class ClientBL:
         ectx.trsess_set_attributes(session, TPMA_SESSION.ENCRYPT | TPMA_SESSION.DECRYPT)
         return session
 
-    def authenticate(self):
+    def authenticate(self) -> [bool, bytes]:
         try:
             with ESAPI(tcti="tabrmd") as ectx:
                 nv_read = NVReadEK(ectx)
@@ -195,6 +196,9 @@ class ClientBL:
                                       validation=validation)
                 cred_fernet = fernet.Fernet(base64.urlsafe_b64encode(certinfo))
                 self.send(cred_fernet.encrypt(key_pub.marshal()) + self._p.DELIMITER + signature.marshal(), "KEY2")
+                response_type, response = self.receive()
+                if response != "Success":
+                    return False, response
         except TSS2_Exception as e:
             logging.exception("[CLIENT_BL] Exception on authenticate, confirm that the user has the permission to interact with the tpm. Error: {}".format(e))
         # except Exception as e:
@@ -252,6 +256,9 @@ class ClientBL:
             return [False, "Must be logged in as Admin"]
         self.send("Request", "DB")
         response_type, db_response = self.receive()
+        print(response_type, db_response)
+        if not os.path.exists("../resources/db/"):
+            os.mkdir("../resources/db/")
         with open("../resources/db/users.db", "wb") as f:
             f.write(db_response)
 
