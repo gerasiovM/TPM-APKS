@@ -1,7 +1,7 @@
 import sys
 from ClientBL import ClientBL
 from PyQt6.QtGui import QRegularExpressionValidator
-from PyQt6.QtWidgets import QApplication, QMainWindow, QWidget, QTableView
+from PyQt6.QtWidgets import QApplication, QMainWindow, QWidget, QTableView, QDialog
 from PyQt6.QtCore import QRegularExpression, QTimer, pyqtSignal, QObject
 from PyQt6.QtSql import QSqlDatabase, QSqlTableModel
 from PyQt6.uic import loadUi
@@ -62,7 +62,7 @@ class ClientGUI(QMainWindow, ClientBL):
     def update_login_status(self, login_type):
         self._logged_in = login_type
         if self._logged_in == "Admin":
-            self.admin_wnd = AdminGUI(self.retrieve_database)
+            self.admin_wnd = AdminGUI([self.retrieve_database, self.add_user])
             self.admin_wnd.show()
 
     def closeEvent(self, event):
@@ -154,11 +154,12 @@ class LoginGUI(QWidget):
 
 
 class AdminGUI(QWidget):
-    def __init__(self, retrieve_database):
+    def __init__(self, callbacks):
         super(AdminGUI, self).__init__()
         loadUi('../resources/ui/admin.ui', self)
         self.tableView: QTableView = self.tableView
-        self.retrieve_database = retrieve_database
+        self.retrieve_database = callbacks[0]
+        self.add_user = callbacks[1]
         self.retrieve_database()
         self.setup_database()
         self.setup_model()
@@ -166,12 +167,15 @@ class AdminGUI(QWidget):
         self.pushButton_update_db.clicked.connect(self.reload_database)
         self.pushButton_add_user.clicked.connect(self.add_user)
 
-    def reload_database(self):
+    def update_db_clicked(self):
         self.retrieve_database()
         self.model.select()
 
-    def add_user(self):
-        pass
+    def add_user_clicked(self):
+        dialog = AddUserDialog()
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            login, password = dialog.get_user_info()
+            self.add_user(login, password)
 
     def setup_database(self):
         self.db = QSqlDatabase.addDatabase('QSQLITE')
@@ -188,7 +192,19 @@ class AdminGUI(QWidget):
         self.tableView.setModel(self.model)
         self.tableView.resizeColumnsToContents()
 
+class AddUserDialog(QDialog):
+    def __init__(self):
+        super().__init__()
+        loadUi("adduser.ui", self)
 
+        # Connect buttons to their functions
+        self.pushButton_ok.clicked.connect(self.accept)
+        self.pushButton_cancel.clicked.connect(self.reject)
+
+    def get_user_info(self):
+        login = self.lineEdit_login.text()
+        password = self.lineEdit_password.text()
+        return login, password
 
 def main():
     app = QApplication(sys.argv)

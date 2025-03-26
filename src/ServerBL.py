@@ -91,6 +91,13 @@ class ServerBL:
             self._con.commit()
             cursor.close()
 
+    def add_user(self, login, password_hash, salt):
+        with self._con_lock:
+            cursor = self._con.cursor()
+            cursor.execute('''INSERT INTO users(login, hash, salt) VALUES(?, ?, ?)''', (login, password_hash, salt))
+            self._con.commit()
+            cursor.close()
+
     def stop_server(self):
         try:
             self._is_srv_running = False
@@ -247,6 +254,8 @@ class ClientHandler(threading.Thread):
                 response = self.handle_key_submission(data)
             if data_type == "DB":
                 response, response_data_type = self.handle_db_request(data)
+            if data_type == "REG":
+                response = self.handle_register(data)
         except cryptography.exceptions.InvalidSignature:
             logging.warning("[SERVER_BL] Received invalid HMAC, discarding data")
             response = "Wrong HMAC, make sure you are using the correct hashing algorithm"
@@ -377,6 +386,17 @@ class ClientHandler(threading.Thread):
         else:
             response = "Must be logged in as admin"
         return response, response_data_type
+
+    def handle_register(self, data: bytes):
+        if Protocol.DELIMITER not in data:
+            response = "Wrong REG format"
+        else:
+            login, password = data.split(Protocol.DELIMITER)
+            password_hasher = PasswordHasher()
+            salt, phash = [x.encode(Protocol.FORMAT) for x in password_hasher.hash(password).split("$")[-2:]]
+
+
+
 
     def send_response(self, response, response_data_type):
         if self._mode == "KEY":

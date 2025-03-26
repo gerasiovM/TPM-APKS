@@ -290,6 +290,8 @@ class ClientBL:
         with open("../resources/db/users.db", "wb") as f:
             f.write(db_response)
 
+    def add_user(self, login: str, password: str) -> [bool, str]:
+        self.send(login.encode(Protocol.FORMAT) + Protocol.DELIMITER + password.encode(Protocol.FORMAT), "REG")
 
     def establish_secure_connection(self) -> bool:
         try:
