@@ -25,9 +25,6 @@
             </item>
             <item>
                 <widget class="QLineEdit" name="lineEdit_password">
-                    <property name="echoMode">
-                        <enum>QLineEdit.Password</enum>
-                    </property>
                 </widget>
             </item>
             <item>

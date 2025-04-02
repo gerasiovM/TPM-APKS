@@ -1,7 +1,7 @@
 import sys
 from ClientBL import ClientBL
 from PyQt6.QtGui import QRegularExpressionValidator
-from PyQt6.QtWidgets import QApplication, QMainWindow, QWidget, QTableView, QDialog
+from PyQt6.QtWidgets import QApplication, QMainWindow, QWidget, QTableView, QDialog, QLineEdit
 from PyQt6.QtCore import QRegularExpression, QTimer, pyqtSignal, QObject
 from PyQt6.QtSql import QSqlDatabase, QSqlTableModel
 from PyQt6.uic import loadUi
@@ -164,18 +164,21 @@ class AdminGUI(QWidget):
         self.setup_database()
         self.setup_model()
 
-        self.pushButton_update_db.clicked.connect(self.reload_database)
-        self.pushButton_add_user.clicked.connect(self.add_user)
+        self.pushButton_update_db.clicked.connect(self.update_db_clicked)
+        self.pushButton_add_user.clicked.connect(self.add_user_clicked)
 
     def update_db_clicked(self):
         self.retrieve_database()
-        self.model.select()
+        self.db.close()
+        self.db.open()
+        self.setup_model()
 
     def add_user_clicked(self):
         dialog = AddUserDialog()
         if dialog.exec() == QDialog.DialogCode.Accepted:
             login, password = dialog.get_user_info()
             self.add_user(login, password)
+        self.update_db_clicked()
 
     def setup_database(self):
         self.db = QSqlDatabase.addDatabase('QSQLITE')
@@ -195,7 +198,9 @@ class AdminGUI(QWidget):
 class AddUserDialog(QDialog):
     def __init__(self):
         super().__init__()
-        loadUi("adduser.ui", self)
+        loadUi("../resources/ui/adduser.ui", self)
+
+        self.lineEdit_password.setEchoMode(QLineEdit.EchoMode.Password)
 
         # Connect buttons to their functions
         self.pushButton_ok.clicked.connect(self.accept)

@@ -292,6 +292,11 @@ class ClientBL:
 
     def add_user(self, login: str, password: str) -> [bool, str]:
         self.send(login.encode(Protocol.FORMAT) + Protocol.DELIMITER + password.encode(Protocol.FORMAT), "REG")
+        response_type, response = self.receive()
+        if response.decode(Protocol.FORMAT) == "Success":
+            return [True, response]
+        else:
+            return [False, response]
 
     def establish_secure_connection(self) -> bool:
         try:
