@@ -1,4 +1,4 @@
-from tpm2_pytss import TPM2B_PUBLIC, TPMT_SIGNATURE
+from tpm2_pytss import TPM2B_PUBLIC, TPMT_SIGNATURE, TPM2B_PUBLIC_KEY_RSA
 from Protocol import LOG_FILE, Protocol
 import logging
 import sqlite3
@@ -48,6 +48,9 @@ class ServerBL:
         cursor = self._con.cursor()
         exists = cursor.execute('''SELECT 1 FROM users WHERE login = ? LIMIT 1''',
                                 (login,)).fetchone()
+        alls = cursor.execute('''SELECT * FROM users''').fetchall()
+        print(alls)
+        print(exists)
         cursor.close()
         return bool(exists)
 
@@ -75,7 +78,8 @@ class ServerBL:
         salt = cursor.execute('''SELECT salt FROM users WHERE login = ? LIMIT 1''',
                               (login,)).fetchone()[0]
         cursor.close()
-        return salt
+        padding = b'=' * (4 - len(salt) % 4)
+        return base64.decodebytes(salt + padding)
 
     def get_user_key(self, login):
         cursor = self._con.cursor()
@@ -135,7 +139,8 @@ class ServerBL:
                                                self.check_user_has_key,
                                                self.get_user_salt,
                                                self.get_user_key,
-                                               self.save_user_key])
+                                               self.save_user_key,
+                                               self.add_user])
                 cl_handler.start()
                 self._client_handlers.append(cl_handler)
                 logging.debug(f"[SERVER_BL] ACTIVE CONNECTION {threading.active_count() - 1}")
@@ -161,6 +166,7 @@ class ClientHandler(threading.Thread):
         self._get_user_salt = callbacks[3]
         self._get_user_key = callbacks[4]
         self._save_user_key = callbacks[5]
+        self._add_user = callbacks[6]
 
         self._p = Protocol()
         self._mode = "KEY"
@@ -208,7 +214,7 @@ class ClientHandler(threading.Thread):
         self._client_handlers.remove(self)
 
     # Called when Client hasn't established a symmetric encryption
-    def process_key_exchange(self, data, data_type):
+    def process_key_exchange(self, data: bytes, data_type: str) -> [str | bytes, str]: # [response, response data type]
         response, response_data_type = "", "MSG"
         # The client can only send their public key when there is no symmetric encryption
         if data_type == "KEY":
@@ -278,7 +284,7 @@ class ClientHandler(threading.Thread):
                 password = data[20:]
                 salt = self._get_user_salt(login)
                 ph = PasswordHasher()
-                password_hash = ph.hash(password, salt=salt).split("$")[-1]
+                password_hash = ph.hash(password, salt=salt).split("$")[-1].encode(Protocol.FORMAT)
                 if self._check_user_correct_password(login, password_hash):
                     self._mode = "LOGGED_IN_USER"
                     self._login = login
@@ -337,6 +343,7 @@ class ClientHandler(threading.Thread):
             ek_pub_bytes, ak_pub_bytes, ek_cert = data.split(self._p.DELIMITER)
             ek_pub = TPM2B_PUBLIC.unmarshal(ek_pub_bytes)[0]
             self._ak_pub = TPM2B_PUBLIC.unmarshal(ak_pub_bytes)[0]
+
             print(ek_cert)
             if "-----BEGIN CERTIFICATE-----".encode(Protocol.FORMAT) in ek_cert:
                 cm = CertificateManager(ek_cert, mode="PEM")
@@ -392,11 +399,17 @@ class ClientHandler(threading.Thread):
             response = "Wrong REG format"
         else:
             login, password = data.split(Protocol.DELIMITER)
-            password_hasher = PasswordHasher()
-            salt, phash = [x.encode(Protocol.FORMAT) for x in password_hasher.hash(password).split("$")[-2:]]
-
-
-
+            print("LOGIN, PASSWORD")
+            print(login, password)
+            login = login.decode(Protocol.FORMAT)
+            if self._check_user_exists(login):
+                response = "User already exists"
+            else:
+                password_hasher = PasswordHasher()
+                salt, phash = [x.encode(Protocol.FORMAT) for x in password_hasher.hash(password).split("$")[-2:]]
+                self._add_user(login, phash, salt)
+                response = "Success"
+        return response
 
     def send_response(self, response, response_data_type):
         if self._mode == "KEY":

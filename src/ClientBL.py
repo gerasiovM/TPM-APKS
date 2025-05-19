@@ -194,8 +194,8 @@ class ClientBL:
         cred_fernet = fernet.Fernet(base64.urlsafe_b64encode(certinfo))
         return ak_handle, cred_fernet
 
-    #
-    def authenticate(self) -> [bool, bytes]:
+    # Enrolls user's public key into server's DB
+    def authenticate(self) -> [bool, bytes]: # [response is valid?, response]
         try:
             # Opening a connection with the TPM through tabrmd
             with ESAPI(tcti="tabrmd") as ectx:
@@ -227,6 +227,7 @@ class ClientBL:
                 response_type, response = self.receive()
                 if response != "Success":
                     return False, response
+            return True, response
         except TSS2_Exception as e:
             logging.exception("[CLIENT_BL] Exception on authenticate, confirm that the user has the permission to interact with the tpm. Error: {}".format(e))
         # except Exception as e:
@@ -270,7 +271,7 @@ class ClientBL:
                 self.send(self._temp_admin_fernet.encrypt(b"Answer"), "LGNB")
                 self._fernet, self._temp_admin_fernet = self._temp_admin_fernet, self._fernet
                 response_type, response = self.receive()
-                if response_type is not None:
+                if response_type is not None:   
                     return True, "Success"
                 else:
                     self._fernet, self._temp_admin_fernet = self._temp_admin_fernet, self._fernet

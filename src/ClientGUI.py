@@ -53,6 +53,7 @@ class ClientGUI(QMainWindow, ClientBL):
                 self.lineEdit_host.setReadOnly(True)
                 self.lineEdit_port.setReadOnly(True)
                 self._socket.settimeout(0.01)
+                self.plainTextEdit_incoming.appendPlainText("Successfully connected")
 
     def login_pressed(self):
         self.login_wnd = LoginGUI([self.login, self.login_admin, self.receive])
@@ -62,8 +63,11 @@ class ClientGUI(QMainWindow, ClientBL):
     def update_login_status(self, login_type):
         self._logged_in = login_type
         if self._logged_in == "Admin":
+            self.plainTextEdit_incoming.appendPlainText("Successfully logged in as Admin")
             self.admin_wnd = AdminGUI([self.retrieve_database, self.add_user])
             self.admin_wnd.show()
+        else:
+            self.plainTextEdit_incoming.appendPlainText("Successfully logged in as User")
 
     def closeEvent(self, event):
         if self.login_wnd is not None:
@@ -79,7 +83,11 @@ class ClientGUI(QMainWindow, ClientBL):
             self.label_error.setText("You need to be logged in as user to send the key")
         else:
             self.label_error.setText("")
-            self.authenticate()
+            result, _ = self.authenticate()
+            if result:
+                self.plainTextEdit_incoming.appendPlainText("Enrollment successful")
+            else:
+                self.plainTextEdit_incoming.appendPlainText("Could not complete enrollment")
 
     @staticmethod
     def validate_host(host: str) -> bool:
@@ -180,8 +188,11 @@ class AdminGUI(QWidget):
             self.add_user(login, password)
         self.update_db_clicked()
 
+    # Setting up the QT6's sql connection
     def setup_database(self):
+        # Specifying SQLite as the used SQL type
         self.db = QSqlDatabase.addDatabase('QSQLITE')
+        # Specifying the path to the DB that needs to be used
         self.db.setDatabaseName("../resources/db/users.db")
         if not self.db.open():
             print("Failed to connect to the database")
@@ -189,9 +200,11 @@ class AdminGUI(QWidget):
 
     def setup_model(self):
         self.model = QSqlTableModel()
+        # Choosing which table to display from the DB
         self.model.setTable("users")
         self.model.select()
 
+        # Applying the model to our QTableView
         self.tableView.setModel(self.model)
         self.tableView.resizeColumnsToContents()
 
