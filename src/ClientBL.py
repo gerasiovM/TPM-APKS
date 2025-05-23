@@ -79,7 +79,7 @@ class ClientBL:
             data = data.encode(Protocol.FORMAT)
         return self._p.send_bytes(self._socket, data_type, b"", data)
 
-    def receive(self) -> [bytes, bytes]: # [data_type, data]
+    def receive(self) -> [str, bytes]: # [data_type, data]
         if not self._socket:
             return None, b""
         try:
@@ -195,7 +195,7 @@ class ClientBL:
         return ak_handle, cred_fernet
 
     # Enrolls user's public key into server's DB
-    def authenticate(self) -> [bool, bytes]: # [response is valid?, response]
+    def enroll(self) -> [bool, bytes]: # [response is valid?, response]
         try:
             # Opening a connection with the TPM through tabrmd
             with ESAPI(tcti="tabrmd") as ectx:
@@ -225,7 +225,7 @@ class ClientBL:
                                       validation=validation)
                 self.send(cred_fernet.encrypt(key_pub.marshal()) + self._p.DELIMITER + signature.marshal(), "KEY2")
                 response_type, response = self.receive()
-                if response != "Success":
+                if response_type != "MSG" or response.decode(Protocol.FORMAT) != "Success":
                     return False, response
             return True, response
         except TSS2_Exception as e:

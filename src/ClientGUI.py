@@ -83,7 +83,7 @@ class ClientGUI(QMainWindow, ClientBL):
             self.label_error.setText("You need to be logged in as user to send the key")
         else:
             self.label_error.setText("")
-            result, _ = self.authenticate()
+            result, _ = self.enroll()
             if result:
                 self.plainTextEdit_incoming.appendPlainText("Enrollment successful")
             else:

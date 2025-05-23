@@ -427,7 +427,7 @@ class ClientHandler(threading.Thread):
             hmac_manager_local.update(response)
             response_hmac = hmac_manager_local.finalize()
             sent = self._p.send_bytes(self._client_socket, response_data_type, response_hmac, response)
-            logging.info(f"[SERVER_BL] Sent message to client - ///////{response}")
+        logging.info(f"[SERVER_BL] Sent message to client - ///////{response}")
         return sent
 
     def stop(self):
