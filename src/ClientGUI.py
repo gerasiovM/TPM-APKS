@@ -52,7 +52,6 @@ class ClientGUI(QMainWindow, ClientBL):
                 self.pushButton_connect.setEnabled(False)
                 self.lineEdit_host.setReadOnly(True)
                 self.lineEdit_port.setReadOnly(True)
-                self._socket.settimeout(0.01)
                 self.plainTextEdit_incoming.appendPlainText("Successfully connected")
 
     def login_pressed(self):

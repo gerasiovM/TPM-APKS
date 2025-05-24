@@ -6,7 +6,7 @@ from cryptography.hazmat.primitives.asymmetric import padding
 
 #LOG_FILE = f'LOG-{datetime.now().strftime("%d%m%Y-%H%M")}.log'
 LOG_FILE = 'LOG.log'
-logging.basicConfig(filename=LOG_FILE, level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(filename=LOG_FILE, level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 class Protocol:
     BUFFER_SIZE = 1024
@@ -38,17 +38,25 @@ class Protocol:
             s.sendall(to_send)
             return True
         except Exception as e:
-            logging.error(e)
+            logging.exception(e)
             return False
 
     def send_str(self, s: socket.socket, data_type: str, signature: bytes, data: str) -> bool:
         return self.send_bytes(s, data_type, signature, data.encode(self.FORMAT))
 
-    def receive_large(self, s: socket.socket, data_size: int) -> bytes:
+    def receive_large(self, s: socket.socket, data_size: int) -> bytes|None:
         data = b''
-        while len(data) < data_size:
-            received = s.recv(self.BUFFER_SIZE)
-            data += received
+        while data_size:
+            chunk = s.recv(min(self.BUFFER_SIZE, data_size))
+            if not chunk:
+                break
+            data += chunk
+            data_size = data_size-len(chunk)
+            print(len(data), "|", data_size)
+        if data_size:
+            logging.error("not enough data in the socket")
+            return None
+        print(f"receive_large: recived={len(data)}")
         return data
 
     # Uses a socket to receive packets
@@ -63,12 +71,11 @@ class Protocol:
             if not data_size.isnumeric():
                 logging.error("Received data size is invalid, aborting")
                 return [False, data_type, data_hmac, '']
-            # If the length of the message is bigger than maximum buffer size, then use receive_large
-            if int(data_size) > self.BUFFER_SIZE:
-                data = self.receive_large(s, int(data_size))
-            # Else receive normally
-            else:
-                data = s.recv(int(data_size))
+
+            data = self.receive_large(s, int(data_size))
+            if data is None:
+                return [False, data_type, data_hmac, '']
+
             if not data:
                 return [False, data_type, data_hmac, b""]
             return [True, data_type, data_hmac, data]
