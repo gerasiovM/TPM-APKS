@@ -6,8 +6,6 @@ from PyQt6.QtCore import QRegularExpression, QTimer, pyqtSignal, QObject
 from PyQt6.QtSql import QSqlDatabase, QSqlTableModel
 from PyQt6.uic import loadUi
 
-from src.Protocol import Protocol
-
 
 class ClientGUI(QMainWindow, ClientBL):
     def __init__(self):

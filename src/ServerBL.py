@@ -14,7 +14,7 @@ from cryptography.fernet import Fernet
 from argon2 import PasswordHasher
 from tpm2_pytss.utils import make_credential
 
-from src.CertificateManager import CertificateManager
+from CertificateManager import CertificateManager
 
 
 class ServerBL:
